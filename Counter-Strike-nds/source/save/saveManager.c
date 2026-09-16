@@ -41,7 +41,11 @@ void Save()
         }
     }
 
-    char saveText[512];
+    // Static, and roomy: this is built by ~30 chained unbounded sprintf calls,
+    // and the ARM9 stack lives in DTCM with only about 16 KB to give. At
+    // INPUT_COUNT 15 with multi-digit stats the old 512-byte automatic buffer
+    // overflowed into the caller's frame, silently, on every save.
+    static char saveText[1024];
     sprintf(saveText, "game_version %s\n", GAME_VERSION);
     sprintf(saveText + strlen(saveText), "player_name %s\n", localPlayer->name);
     sprintf(saveText + strlen(saveText), "player_ip %s\n", IpToGo);

@@ -14,6 +14,31 @@
 #include "party.h"
 #include "player.h"
 
+static bool wallVisibleFromZone(const Map *map, int zone, int wall)
+{
+    int wallZone = map->AllWallsCollisions[wall].ZoneCollision;
+    if (wallZone == -1)
+        return true;
+    for (int i = 0; i < map->AllZones[zone].ZoneCount; i++)
+        if (map->AllZones[zone].visibleMapPart[i] == wallZone)
+            return true;
+    return false;
+}
+
+void BuildRaycastWallMasks(int mapIndex)
+{
+    Map *map = &allMaps[mapIndex];
+    int stride = (map->CollisionsCount + 7) / 8;
+    free(map->raycastWallMasks);
+    map->raycastWallMasks = calloc(map->zonesCount, stride);
+    if (!map->raycastWallMasks)
+        return; // Raycast retains the original filtering as a fallback.
+    for (int zone = 0; zone < map->zonesCount; zone++)
+        for (int wall = 0; wall < map->CollisionsCount; wall++)
+            if (wallVisibleFromZone(map, zone, wall))
+                map->raycastWallMasks[zone * stride + (wall >> 3)] |= 1u << (wall & 7);
+}
+
 /**
  * @brief Prepare a raycast for Ai, store values for the incomming raycast call
  *
@@ -21,17 +46,24 @@
  * @param toPlayerIndex player index to shoot
  * @param checkVisibility true : just check if player to shoot is visible, false : apply damage to player if he is visible
  */
-void prepareAiRaycast(int fromPlayerIndex, int toPlayerIndex, bool checkVisibility)
+bool prepareAiRaycast(int fromPlayerIndex, int toPlayerIndex, bool checkVisibility)
 {
+    if (fromPlayerIndex < 0 || fromPlayerIndex >= MaxPlayer || toPlayerIndex < 0 || toPlayerIndex >= MaxPlayer)
+        return false;
     Player *shooterPlayer = &AllPlayers[fromPlayerIndex];
     Player *targetPlayer = &AllPlayers[toPlayerIndex];
+    // A player with no model is not in the world, so there is nothing to aim from or at.
+    // Returning before setRaycastValues() matters: the stored ray stays as it was, and the
+    // caller is told not to fire it.
+    if (shooterPlayer->PlayerModel == NULL || targetPlayer->PlayerModel == NULL)
+        return false;
 
     // Get distance between shooter and target players
-    float distance2D = sqrtf(powf(targetPlayer->PlayerModel->x - shooterPlayer->PlayerModel->x, 2.0) + powf(targetPlayer->PlayerModel->z - shooterPlayer->PlayerModel->z, 2.0));
+    float distance2D = sqrtf(squareFloat(targetPlayer->PlayerModel->x - shooterPlayer->PlayerModel->x) + squareFloat(targetPlayer->PlayerModel->z - shooterPlayer->PlayerModel->z));
     // Get shoot direction
     Vector3 Direction;
     Direction.x = targetPlayer->PlayerModel->x - shooterPlayer->PlayerModel->x;
-    Direction.y = targetPlayer->PlayerModel->y - (shooterPlayer->PlayerModel->y + CameraOffsetYMultiplied);
+    Direction.y = targetPlayer->PlayerModel->y - (shooterPlayer->PlayerModel->y + PlayerEyeOffsetF32(shooterPlayer));
     Direction.z = targetPlayer->PlayerModel->z - shooterPlayer->PlayerModel->z;
 
     float tempAngle = atan2f(Direction.x, Direction.z) * 512.0 / (M_TWOPI) + 256.0;
@@ -78,6 +110,7 @@ void prepareAiRaycast(int fromPlayerIndex, int toPlayerIndex, bool checkVisibili
     setRaycastValues(shooterPlayer, x2, y2, z2);
 
     shooterPlayer->justCheking = checkVisibility;
+    return true;
 }
 
 /**
@@ -92,7 +125,7 @@ void prepareAiRaycast(int fromPlayerIndex, int toPlayerIndex, bool checkVisibili
 void getValuesForRaycast(Vector3Int StartPosition, Vector3Int EndPosition, float *x, float *y, float *z)
 {
     // Get distance between shooter and target players
-    float distance2D = sqrtf(powf(EndPosition.x - StartPosition.x, 2.0) + powf(EndPosition.z - StartPosition.z, 2.0));
+    float distance2D = sqrtf(squareFloat(EndPosition.x - StartPosition.x) + squareFloat(EndPosition.z - StartPosition.z));
     // Get shoot direction
     Vector3 Direction;
     Direction.x = EndPosition.x - StartPosition.x;
@@ -140,33 +173,10 @@ int Raycast(int playerIndex, int currentShootIndex, float *distance)
     shooterPlayer->IsLegShot[currentShootIndex] = false;
     int HitPlayerIndex = NO_PLAYER;
 
-    // Get an array of all walls to test
-    int WallCountToTest = 0;
-    int AllWallsToCheck[wallCount];
-    for (int i2 = 0; i2 < allMaps[currentMap].CollisionsCount; i2++)
-    {
-        // If the wall raycast is not affecting all zones:
-        if (getMapWalls()[i2].ZoneCollision != -1)
-        {
-            for (int i3 = 0; i3 < allMaps[currentMap].AllZones[shooterPlayer->CurrentOcclusionZone].ZoneCount; i3++)
-            {
-                // If the wall is in the visible zone
-                if (allMaps[currentMap].AllZones[shooterPlayer->CurrentOcclusionZone].visibleMapPart[i3] == getMapWalls()[i2].ZoneCollision)
-                {
-                    // Add the wall to the array
-                    AllWallsToCheck[WallCountToTest] = i2;
-                    WallCountToTest++;
-                    break;
-                }
-            }
-        }
-        else
-        {
-            // Add the wall to the array
-            AllWallsToCheck[WallCountToTest] = i2;
-            WallCountToTest++;
-        }
-    }
+    Map *map = &allMaps[currentMap];
+    int zone = shooterPlayer->CurrentOcclusionZone;
+    const unsigned char *wallMask = map->raycastWallMasks ?
+        map->raycastWallMasks + zone * ((map->CollisionsCount + 7) / 8) : NULL;
 
     // Check who is the nearest object, a wall or a player?
 
@@ -184,16 +194,18 @@ int Raycast(int playerIndex, int currentShootIndex, float *distance)
     // Get int version * 2 of the start position for wall checking (I have no idea why I need to multiply this by 2 lol (8192 = 4096*2))
     Vector3Int startPosition;
     startPosition.x = shooterPlayer->startRaycastPosition.x * 8192;
-    startPosition.y = (shooterPlayer->startRaycastPosition.y + CameraOffsetY) * 8192;
+    startPosition.y = (shooterPlayer->startRaycastPosition.y + PlayerEyeOffset(shooterPlayer)) * 8192;
     startPosition.z = shooterPlayer->startRaycastPosition.z * 8192;
 
-    for (int wallIndex = 0; wallIndex < WallCountToTest; wallIndex++)
+    for (int WallIndex = 0; WallIndex < map->CollisionsCount; WallIndex++)
     {
+        if (wallMask ? !(wallMask[WallIndex >> 3] & (1u << (WallIndex & 7))) :
+            !wallVisibleFromZone(map, zone, WallIndex))
+            continue;
         // Get both opposite corners of the wall
         Vector3Int corner1;
         Vector3Int corner2;
 
-        int WallIndex = AllWallsToCheck[wallIndex];
         corner1.x = getMapWalls()[WallIndex].WallCollisionBox.BoxXRangeA;
         corner1.y = getMapWalls()[WallIndex].WallCollisionBox.BoxYRangeA;
         corner1.z = getMapWalls()[WallIndex].WallCollisionBox.BoxZRangeA;
@@ -217,7 +229,7 @@ int Raycast(int playerIndex, int currentShootIndex, float *distance)
 
     // Get int version of the start position for player checking
     startPosition.x = shooterPlayer->startRaycastPosition.x * 4096;
-    startPosition.y = (shooterPlayer->startRaycastPosition.y + CameraOffsetY) * 4096;
+    startPosition.y = (shooterPlayer->startRaycastPosition.y + PlayerEyeOffset(shooterPlayer)) * 4096;
     startPosition.z = shooterPlayer->startRaycastPosition.z * 4096;
     if (shooterPlayer->ScanForGrenade != EMPTY)
     {
@@ -321,7 +333,7 @@ int Raycast(int playerIndex, int currentShootIndex, float *distance)
             //  Create wall shot flash position
             Vector3 hitPosition;
             hitPosition.x = shooterPlayer->startRaycastPosition.x + shooterPlayer->startRaycastRotation.x * t;
-            hitPosition.y = shooterPlayer->startRaycastPosition.y + CameraOffsetY + shooterPlayer->startRaycastRotation.y * t;
+            hitPosition.y = shooterPlayer->startRaycastPosition.y + PlayerEyeOffset(shooterPlayer) + shooterPlayer->startRaycastRotation.y * t;
             hitPosition.z = shooterPlayer->startRaycastPosition.z + shooterPlayer->startRaycastRotation.z * t;
 
             if (!AllGuns[shooterPlayer->startGunIdRaycast].isKnife)
@@ -341,7 +353,7 @@ int Raycast(int playerIndex, int currentShootIndex, float *distance)
 
                 // Create wall hit flash rotation
                 Vector2 Direction1D;
-                Direction1D.y = hitPosition.y - shooterPlayer->position.y - CameraOffsetY + y;
+                Direction1D.y = hitPosition.y - shooterPlayer->position.y - PlayerEyeOffset(shooterPlayer) + y;
                 Direction1D.x = 1;
                 normalize2D(&Direction1D);
 

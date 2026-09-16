@@ -192,7 +192,7 @@ void MapImgToLoadFunc()
 		NE_MaterialTexLoadBMPtoRGB256(TopScreenSpritesMaterials[4], Palettes[17], (void *)MapUI_General_bin, 0);
 	}
 
-    TopScreenSprites[1] = NE_SpriteCreate();
+    // Reuse the minimap sprite created by initGraphics().
 	NE_SpriteSetSize(TopScreenSprites[1], 170, 177);
 	NE_SpriteSetPriority(TopScreenSprites[1], 2);
 	NE_SpriteSetMaterial(TopScreenSprites[1], TopScreenSpritesMaterials[4]);
@@ -238,6 +238,12 @@ void SetTwoScreenMode(bool value)
  */
 void Draw3DScene(void)
 {
+    // Quitting a match deletes every player mid-frame (see GameLoop), and that frame is
+    // still rendered. Everything below culls against the camera player's model, so draw
+    // nothing for it; the menu scene takes over on the next frame.
+    if (AllPlayers[CurrentCameraPlayer].PlayerModel == NULL)
+        return;
+
     // Set camera for drawing
     NE_CameraUse(Camera);
 
@@ -388,8 +394,10 @@ void Draw3DScene(void)
  */
 void DrawPlayers()
 {
-    if (UpdateBottomScreenFrameCount != 0)
-        return;
+    // Upstream skipped every player whenever the bottom screen was refreshing, which is
+    // any frame in a NE_ProcessDual batch. startChangeMenu() queues 8 of those, so every
+    // menu interaction -- and every kill and network event, which also queue 8 -- made
+    // the players vanish for about an eighth of a second.
 
     Map *map = &allMaps[currentMap];
 

@@ -220,4 +220,16 @@ void endTutorial()
     tutorialDone = true;
     isInTutorial = false;
     currentSelectionMap = DUST2;
+
+    // The main menu's top screen is a live render of the loaded map from that map's menu
+    // camera. Left alone it keeps the tutorial map, and finishing the tutorial never moves
+    // the camera, so the menu showed the player's last point of view. Load Dust2 as a
+    // normal boot does; LoadMap() also sets the menu camera. initMainMenu() calls this
+    // after removeAllPlayers(), so no player still refers to the tutorial's collisions.
+    if (currentMap != DUST2)
+    {
+        UnLoadMap(currentMap);
+        currentMap = DUST2;
+        LoadMap(currentMap);
+    }
 }

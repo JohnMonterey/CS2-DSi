@@ -83,6 +83,9 @@ void initInputs()
     inputs[RIGHT_GUN].value = -1; // Unasigned
     inputs[RIGHT_GUN].nameIndex = 12;
 
+    inputs[CROUCH_BUTTON].value = -1; // Unasigned
+    inputs[CROUCH_BUTTON].nameIndex = 12;
+
     // Set inputs names list
     inputsNames[0] = "A";
     inputsNames[1] = "B";

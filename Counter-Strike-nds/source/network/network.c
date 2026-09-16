@@ -7,6 +7,7 @@
 #include "../main.h"
 #include "sounds.h"
 #include "movements.h"
+#include "playermove.h"
 #include "grenade.h"
 #include "gun.h"
 #include "ui.h"
@@ -16,9 +17,11 @@
 #include "player.h"
 #include "security.h"
 #include "camera.h"
+#include "dsidev.h"
 
 #include <dswifi9.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <netdb.h>
 
@@ -70,13 +73,16 @@ char partyCode[PARTY_CODE_LENGTH];
 bool isPrivate = false;
 
 char Values[1024] = "";     // Store all the values received from the wifi and wainting for treatment
-char TempValues[1024] = ""; // Store values that can't be treated yet
 
 void initNetwork(int option)
 {
     // See Wifi_CheckInit to replace my_socket == 0 by !Wifi_CheckInit()
     // Call Wifi_InitDefault only once (by checking if the socket was already used), or the wifi will not work after that
-    if (my_socket == 0 && !Wifi_InitDefault(WFC_CONNECT))
+    // In a development build the deployment runtime already owns the connection: wait for
+    // its association instead of initialising dswifi a second time.
+    bool wifiReady = my_socket != 0 ||
+                     (dsidev_wifi_ready() ? dsidev_wifi_wait() : Wifi_InitDefault(WFC_CONNECT));
+    if (!wifiReady)
     {
         Connection = UNSELECTED;
         initMainMenu();
@@ -132,6 +138,20 @@ void connectToServer(char *url, bool LocalMode, int my_socket, enum JoinType opt
     else // Find the IP address of the server, with gethostbyname
         myhost = gethostbyname(url);
 
+    // gethostbyname() returns NULL for an address it cannot resolve, which is what a
+    // mistyped IP or a DNS lookup with no route gives you. Reading h_addr_list off that
+    // dereferences NULL and then connects to whatever the garbage produced, so the join
+    // simply did nothing and said nothing. Report it instead.
+    if (myhost == NULL || myhost->h_addr_list[0] == NULL)
+    {
+        strcpy(errorText, "Could not find that address.");
+        closesocket(my_socket);
+        my_socket = 0;
+        Connection = UNSELECTED;
+        initOnlineErrorMenu();
+        return;
+    }
+
     // Tell the socket to connect to the IP address we found, on port 6003 or 1080 for android phone
     struct sockaddr_in sain;
     sain.sin_family = AF_INET;
@@ -141,8 +161,17 @@ void connectToServer(char *url, bool LocalMode, int my_socket, enum JoinType opt
         sain.sin_port = htons(LOCAL_SERVER_PORT);
     sain.sin_addr.s_addr = *((unsigned long *)(myhost->h_addr_list[0]));
 
-    // Connect to the server
-    connect(my_socket, (struct sockaddr *)&sain, sizeof(sain));
+    // Connect to the server. The socket is still blocking here -- it is put in
+    // non-blocking mode below -- so this return value is worth something.
+    if (connect(my_socket, (struct sockaddr *)&sain, sizeof(sain)) < 0)
+    {
+        strcpy(errorText, "Could not reach the server.");
+        closesocket(my_socket);
+        my_socket = 0;
+        Connection = UNSELECTED;
+        initOnlineErrorMenu();
+        return;
+    }
 
     // Set socked in non block mode
     int blockmode = 1;
@@ -180,14 +209,25 @@ void resetNetworkVariables()
 
 void treatData()
 {
-    int StartPosition, EndPosition;
-    // printf("a:%s\n", Values);
-
-    // If a complete packet is detected
-    while ((StartPosition = strstr(Values, "{") - Values + 1) > 0 && (EndPosition = strstr(Values + StartPosition, "}") - Values) > 0)
+    char *cursor = Values;
+    char *start;
+    char *end;
+    // Consume packets in place, compacting the incomplete tail only once.
+    while ((start = strchr(cursor, '{')) != NULL)
     {
+        end = strchr(start + 1, '}');
+        if (!end)
+        {
+            cursor = start;
+            break;
+        }
+        cursor = end + 1;
+        size_t packetLength = end - start - 1;
         char currentPacket[256] = "";
-        strncpy(currentPacket, Values + StartPosition, EndPosition - StartPosition);
+        if (packetLength >= sizeof(currentPacket))
+            continue;
+        memcpy(currentPacket, start + 1, packetLength);
+        currentPacket[packetLength] = '\0';
 
         //   Start spliting incoming data
         char *ptr = strtok(currentPacket, ";");
@@ -197,10 +237,14 @@ void treatData()
         // Split data
         while (ptr != NULL)
         {
+            if (SplitCount >= 10 || strlen(ptr) >= sizeof(arr[0]))
+                break;
             strcpy(arr[SplitCount], ptr);
             SplitCount++;
             ptr = strtok(NULL, ";");
         }
+        if (ptr != NULL || SplitCount == 0)
+            continue;
 
         // Check packet info
         if (strcmp(arr[REQUEST_NAME_INDEX], "POS") == 0) // Player position update
@@ -227,9 +271,9 @@ void treatData()
                 localPlayer->position.y = YFloat;
                 localPlayer->position.z = ZFloat;
                 localPlayer->Angle = AngleInt;
-                localPlayer->PlayerPhysic->xspeed = 0;
-                localPlayer->PlayerPhysic->yspeed = 0;
-                localPlayer->PlayerPhysic->zspeed = 0;
+                // Clears velocity, stamina and crouch: an authoritative
+                // teleport must not leave the player mid-jump or half-ducked.
+                PlayerMove_Reset();
                 NE_ModelSetCoord(localPlayer->PlayerModel, localPlayer->position.x, localPlayer->position.y, localPlayer->position.z);
                 ForceUpdateLookRotation(localPlayer->cameraAngle);
             }
@@ -960,15 +1004,11 @@ void treatData()
             }
         }
 
-        // Clear "TempValues"
-        for (int i = 0; i < sizeof(TempValues); i++)
-            TempValues[i] = '\0';
-        // Values[strlen(Values)] = '\0';
-        //  Add all characters after current data packet to "TempValues"
-        strcat(TempValues, Values + EndPosition + 1);
-        // Copy "TempValues" to "Values"
-        strcpy(Values, TempValues);
     }
+    if (!start)
+        cursor += strlen(cursor); // Discard noise with no packet start.
+    if (cursor != Values)
+        memmove(Values, cursor, strlen(cursor) + 1);
 }
 
 /**
@@ -980,6 +1020,7 @@ void ReadServerData()
     // All temp variable for incoming data
     int recvd_len = 0;
     char incoming_buffer[64];
+    Values[0] = '\0';
 
     // Read a maximum of 64 char in one loop
     while ((recvd_len = recv(my_socket, incoming_buffer, 63, 0)) != 0) // if recv returns 0, the socket has been closed. (Sometimes yes, sometimes not, lol)
@@ -990,7 +1031,10 @@ void ReadServerData()
             timeOut = 0;
             incoming_buffer[recvd_len] = 0; // null-terminate
             // add incoming_buffer to Values
-            strncat(Values, incoming_buffer, recvd_len);
+            size_t buffered = strlen(Values);
+            if (buffered + recvd_len >= sizeof(Values))
+                break; // An overlong incomplete packet cannot fit safely.
+            memcpy(Values + buffered, incoming_buffer, recvd_len + 1);
             treatData();
         }
         else if (recvd_len == -1)
@@ -1189,7 +1233,11 @@ void sendDataToServer()
         SendKeyResponse = false;
 
         u8 macAddress[6];
+#if _LIBNDS_MAJOR_ >= 2
+        memcpy(macAddress, g_envExtraInfo->wlmgr_macaddr, 6);
+#else
         Wifi_GetData(WIFIGETDATA_MACADDRESS, 6, macAddress);
+#endif
 
         sprintf(InfoToSend + strlen(InfoToSend), "{%d;%d;%02X%02X%02X%02X%02X%02X;%s;%s}", KEY, getKeyResponse(serverKey), macAddress[0], macAddress[1], macAddress[2], macAddress[3], macAddress[4], macAddress[5], localPlayer->name, GAME_VERSION);
 

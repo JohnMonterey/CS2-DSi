@@ -23,6 +23,13 @@ TARGET   := $(shell basename $(CURDIR))
 BUILD    := build
 SOURCES  := source $(wildcard source/*) $(wildcard source/*/*)
 INCLUDES := include $(dir $(wildcard source/*)) $(dir $(wildcard source/*/*))
+INCLUDES += ../tools/dsi/runtime
+ifeq ($(DSIDEV),1)
+TARGET := Counter-Strike-nds-dev
+BUILD := build-dsidev
+SOURCES += ../tools/dsi/runtime ../tools/dsi/common
+INCLUDES += ../tools/dsi/common
+endif
 DATA     := data
 GRAPHICS :=
 AUDIO    := audio
@@ -35,15 +42,23 @@ ICON     :=
 # These set the information text in the nds file
 GAME_TITLE	:=	Counter Strike
 GAME_SUBTITLE1	:=	Fewnity
-GAME_SUBTITLE2	:=	Fewnity
+GAME_SUBTITLE2	:=	JohnM
 
 #---------------------------------------------------------------------------------
 # options for code generation
 #---------------------------------------------------------------------------------
 ARCH := -marm -mthumb-interwork -march=armv5te -mtune=arm946e-s
 
+# devkitARM r68 ships GCC 16: C23 by default (where `()` means `(void)`) plus the GCC 14
+# promotion of several type mismatches from warning to error. This codebase predates both,
+# so keep its original dialect and diagnostics rather than rewriting every callback site.
+COMPAT   := -std=gnu17 -Wno-error=incompatible-pointer-types -Wno-error=int-conversion
+
 CFLAGS   := -g -Wall -O3\
-            $(ARCH) $(INCLUDE) -DARM9
+            $(ARCH) $(INCLUDE) -DARM9 $(COMPAT)
+ifeq ($(DSIDEV),1)
+CFLAGS += -DDSIDEV_ENABLED
+endif
 CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions
 ASFLAGS  := -g $(ARCH)
 LDFLAGS   = -specs=ds_arm9.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
@@ -66,7 +81,12 @@ endif
 # list of directories containing libraries, this must be the top level containing
 # include and lib
 #---------------------------------------------------------------------------------
-LIBDIRS := ../libs $(LIBNDS) $(PORTLIBS) $(DEVKITPRO)/nitro-engine
+# Fewnity's Nitro Engine fork: the devkitPro tree if it is there, otherwise a checkout
+# beside this repository (no sudo needed). Override with NITRO_ENGINE=/path/to/nitro-engine.
+NITRO_ENGINE ?= $(firstword $(wildcard $(DEVKITPRO)/nitro-engine) \
+                            $(wildcard $(CURDIR)/../../nitro-engine) \
+                            $(DEVKITPRO)/nitro-engine)
+LIBDIRS := ../libs $(LIBNDS) $(PORTLIBS) $(NITRO_ENGINE)
 
 #---------------------------------------------------------------------------------
 # no real need to edit anything past this point unless you need to add additional

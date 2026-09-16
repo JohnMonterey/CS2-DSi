@@ -22,6 +22,7 @@ void launchMusic();
 void loadMusic();
 void stopMusic();
 void checkMusicSteaming();
+void closeMusicSteam();
 
 extern int musicLength;
 extern bool isMusicPlaying;

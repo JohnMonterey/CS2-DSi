@@ -57,43 +57,11 @@ void ResetTakenBotsNames()
     }
 }
 
-/**
- * @brief Copy one matrix to another matrix array
- *
- * @param size Size of the matrix
- * @param matrix Matrix to copy
- * @param index Index of the destination matrix
- */
-void copyArrayToAllMatricesLength(int size, int matrix[size][size], int index)
+// Matrices are immutable, row-major bitsets, least significant bit first.
+static bool pathExists(int matrix, int from, int to)
 {
-    // Alloc memory for the matrix (create a list of int*)
-    AllMatricesLength[index].matrixOneLength = malloc(size * sizeof(int *));
-    for (int i = 0; i < size; i++)
-    {
-        // Alloc memory for the matrix (create a list of int)
-        AllMatricesLength[index].matrixOneLength[i] = malloc(size * sizeof(int));
-        memcpy(AllMatricesLength[index].matrixOneLength[i], matrix[i], sizeof(int) * size);
-    }
-}
-
-/**
- * @brief Free all matrices from memory
- *
- * @param size Size of matrices
- */
-void freeAllMatricesLength(int size)
-{
-    for (int i = 0; i < MatriceCount; i++)
-    {
-        if (AllMatricesLength[i].matrixOneLength)
-        {
-            for (int i2 = 0; i2 < size; i2++)
-            {
-                free(AllMatricesLength[i].matrixOneLength[i2]);
-            }
-            free(AllMatricesLength[i].matrixOneLength);
-        }
-    }
+    int bit = from * MatricesSize + to;
+    return (AllMatricesLength[matrix].matrixOneLength[bit >> 3] >> (bit & 7)) & 1;
 }
 
 /**
@@ -122,7 +90,12 @@ int getNearestWaypoint(float x, float y, float z)
     for (int waypointIndex = 0; waypointIndex < waypointsSize; waypointIndex++)
     {
         // Calculate the distance between waypoint position and the position given
-        int currentDistance = sqrtf(powf((Waypoints[waypointIndex].x - x), 2.0) + powf((Waypoints[waypointIndex].y - y), 2.0) + powf((Waypoints[waypointIndex].z - z), 2.0));
+        float squaredDistance = squareFloat(Waypoints[waypointIndex].x - x) +
+            squareFloat(Waypoints[waypointIndex].y - y) + squareFloat(Waypoints[waypointIndex].z - z);
+        // Keep integer-distance ties unchanged; only take roots of candidates.
+        if (squaredDistance > squareFloat(distance))
+            continue;
+        int currentDistance = sqrtf(squaredDistance);
         if (currentDistance < distance)
         {
             nearestWaypointId = waypointIndex;
@@ -142,7 +115,7 @@ int getNearestWaypoint(float x, float y, float z)
 int GetDistanceBewteenPlayerAndWaypoint(int playerIndex, int waypointIndex)
 {
     Player *player1 = &AllPlayers[playerIndex];
-    return sqrtf(powf((player1->position.x - Waypoints[waypointIndex].x), 2.0) + powf((player1->position.y - Waypoints[waypointIndex].y), 2.0) + powf((player1->position.z - Waypoints[waypointIndex].z), 2.0));
+    return sqrtf(squareFloat((player1->position.x - Waypoints[waypointIndex].x)) + squareFloat((player1->position.y - Waypoints[waypointIndex].y)) + squareFloat((player1->position.z - Waypoints[waypointIndex].z)));
 }
 
 /**
@@ -156,7 +129,7 @@ int GetDistanceBewteenTwoPlayers(int player1Index, int player2Index)
 {
     Player *player1 = &AllPlayers[player1Index];
     Player *player2 = &AllPlayers[player2Index];
-    return sqrtf(powf((player1->position.x - player2->position.x), 2.0) + powf((player1->position.y - player2->position.y), 2.0) + powf((player1->position.z - player2->position.z), 2.0));
+    return sqrtf(squareFloat((player1->position.x - player2->position.x)) + squareFloat((player1->position.y - player2->position.y)) + squareFloat((player1->position.z - player2->position.z)));
 }
 
 /**
@@ -222,10 +195,17 @@ void StartChecking(int playerIndex, int finalWaypointIndex)
 void CheckPathWaypoint(int playerIndex, int startWaypointIndex, int finalWaypointIndex)
 {
     // Find the path length (ex : pathLength = 4 so the path is composed of 4 waypoints)
-    int pathLength = 0;
+    Player *player = &AllPlayers[playerIndex];
+    player->PathCount = 0;
+    player->CurrentPath = 0;
+    if (startWaypointIndex < 0 || startWaypointIndex >= waypointsSize ||
+        finalWaypointIndex < 0 || finalWaypointIndex >= waypointsSize)
+        return;
+
+    int pathLength = -1;
     for (int matriceIndex = 0; matriceIndex < MatriceCount; matriceIndex++)
     {
-        if (AllMatricesLength[matriceIndex].matrixOneLength[startWaypointIndex][finalWaypointIndex] != 0)
+        if (pathExists(matriceIndex, startWaypointIndex, finalWaypointIndex))
         {
             pathLength = matriceIndex;
             break;
@@ -233,7 +213,11 @@ void CheckPathWaypoint(int playerIndex, int startWaypointIndex, int finalWaypoin
     }
 
     // All waypoints ids are in the path list
-    int Path[pathLength + 2];
+    if (startWaypointIndex != finalWaypointIndex && pathLength < 0)
+        return;
+    if (pathLength + 2 > maxPath)
+        return;
+    int Path[maxPath];
     int currentWaypoint = startWaypointIndex;
     int PathCount = 0;
     if (startWaypointIndex == finalWaypointIndex)
@@ -255,18 +239,21 @@ void CheckPathWaypoint(int playerIndex, int startWaypointIndex, int finalWaypoin
             // Add verified waypoint to the path
             Path[PathCount] = currentWaypoint;
             PathCount++;
-            do
+            // Reservoir sampling chooses uniformly among valid edges in one pass.
+            int nextWaypoint = -1;
+            int eligibleCount = 0;
+            for (int edge = 0; edge < Waypoints[currentWaypoint].edgeCount; edge++)
             {
-                // Take a random connected point from the last tested waypoint
-                int NextWaypoint = rand() % Waypoints[currentWaypoint].edgeCount;
-
-                // if the random connected point can reach the final point with (pathLength - Path.Count) movement
-                if (AllMatricesLength[pathLength - PathCount].matrixOneLength[Waypoints[currentWaypoint].edge[NextWaypoint]][finalWaypointIndex] != 0)
+                int candidate = Waypoints[currentWaypoint].edge[edge];
+                if (pathExists(pathLength - PathCount, candidate, finalWaypointIndex))
                 {
-                    currentWaypoint = Waypoints[currentWaypoint].edge[NextWaypoint];
-                    break;
+                    if (rand() % ++eligibleCount == 0)
+                        nextWaypoint = candidate;
                 }
-            } while (true);
+            }
+            if (nextWaypoint < 0)
+                return;
+            currentWaypoint = nextWaypoint;
         }
 
         // Finalise the path
@@ -275,14 +262,9 @@ void CheckPathWaypoint(int playerIndex, int startWaypointIndex, int finalWaypoin
         Path[PathCount] = finalWaypointIndex;
         PathCount++;
 
-        Player *player = &AllPlayers[playerIndex];
-        for (int i = 0; i < PathCount; i++)
-        {
-            player->Path[i] = Path[i];
-        }
-        player->PathCount = PathCount;
-        player->CurrentPath = 0;
     }
+    memcpy(player->Path, Path, PathCount * sizeof(Path[0]));
+    player->PathCount = PathCount;
 }
 
 /**
@@ -298,6 +280,9 @@ void AiCheckForAction()
         int currentAiToCheck = checkPlayerDistanceFromAiTimer / 5;
         if (checkPlayerDistanceFromAiTimer == 0)
             checkPlayerDistanceFromAiTimer = 5 * amountOfBots + 1;
+
+        if (currentAiToCheck >= MaxPlayer)
+            return;
 
         Player *playerToCheck = &AllPlayers[currentAiToCheck];
         // If current AI is in game, not dead, does not planting the bomb, and raycast cycle is finished
@@ -318,22 +303,21 @@ void AiCheckForAction()
             // If current AI has no target
             if (playerToCheck->lastSeenTarget == NO_PLAYER && randomPlayerToCheck == NO_PLAYER)
             {
-                int scannedPlayerCount = 1;
-                playerToCheck->allPlayerScanned[currentAiToCheck] = true;
+                int candidates[MaxPlayer];
+                int candidateCount = 0;
+                for (int i = 0; i < amountOfBots && i < MaxPlayer; i++)
+                    if (i != currentAiToCheck)
+                        candidates[candidateCount++] = i;
                 // Check every players distances to set a new target if the distance is small enough
-                while (scannedPlayerCount < amountOfBots)
+                while (candidateCount > 0)
                 {
-                    // Take a random unscanned player
-                    randomPlayerToCheck = rand() % amountOfBots;
-                    if (playerToCheck->allPlayerScanned[randomPlayerToCheck])
-                        continue;
-
-                    // Mark current player has scanned to avoid multiple check
-                    scannedPlayerCount++;
-                    playerToCheck->allPlayerScanned[randomPlayerToCheck] = true;
+                    // Draw without replacement, preserving random scan order.
+                    int selected = rand() % candidateCount;
+                    randomPlayerToCheck = candidates[selected];
+                    candidates[selected] = candidates[--candidateCount];
 
                     // Check distance if current scanned player is not in spectator team and the same team of the current AI, and if the scanned player is in game
-                    if (AllPlayers[randomPlayerToCheck].Team == SPECTATOR || AllPlayers[randomPlayerToCheck].Team == playerToCheck->Team || AllPlayers[randomPlayerToCheck].IsDead || AllPlayers[randomPlayerToCheck].invincibilityTimer > 0 || AllPlayers[randomPlayerToCheck].Id == UNUSED)
+                    if (AllPlayers[randomPlayerToCheck].Team == SPECTATOR || AllPlayers[randomPlayerToCheck].Team == playerToCheck->Team || AllPlayers[randomPlayerToCheck].IsDead || AllPlayers[randomPlayerToCheck].invincibilityTimer > 0 || AllPlayers[randomPlayerToCheck].Id == UNUSED || AllPlayers[randomPlayerToCheck].PlayerModel == NULL)
                     {
                         continue;
                     }
@@ -343,11 +327,6 @@ void AiCheckForAction()
                         if (distancePlayers < shootDistance)
                             break;
                     }
-                }
-                // Reset scanned players list
-                for (int playerIndex = 0; playerIndex < amountOfBots; playerIndex++)
-                {
-                    playerToCheck->allPlayerScanned[playerIndex] = false;
                 }
             }
 
@@ -365,9 +344,11 @@ void AiCheckForAction()
                 if (distancePlayers < 4)
                     inFov = true;
                 // Check if the target is visible
-                prepareAiRaycast(currentAiToCheck, randomPlayerToCheck, true);
                 float hitDistance = 0;
-                if (Raycast(currentAiToCheck, 0, &hitDistance) != NO_PLAYER && inFov)
+                bool targetVisible = false;
+                if (inFov && prepareAiRaycast(currentAiToCheck, randomPlayerToCheck, true))
+                    targetVisible = Raycast(currentAiToCheck, 0, &hitDistance) != NO_PLAYER;
+                if (targetVisible)
                 {
                     playerToCheck->target = randomPlayerToCheck;
                     playerToCheck->lastSeenTarget = randomPlayerToCheck;
@@ -587,12 +568,22 @@ void checkAiShoot()
         Player *player = &AllPlayers[i];
         if (player->target != NO_PLAYER && player->isAi && !player->IsDead)
         {
+            // A target chosen on an earlier frame can be gone by now: killed, removed, or
+            // never given a model. Drop it and let the AI pick again rather than aiming at
+            // a player that is not there.
+            if (player->target < 0 || player->target >= MaxPlayer || player->PlayerModel == NULL ||
+                AllPlayers[player->target].Id == UNUSED || AllPlayers[player->target].IsDead ||
+                AllPlayers[player->target].PlayerModel == NULL)
+            {
+                player->target = NO_PLAYER;
+                continue;
+            }
             Player *targetPlayer = &AllPlayers[player->target];
 
             // Get the direction to shoot the target
             Vector3 Direction;
             Direction.x = targetPlayer->PlayerModel->x - player->PlayerModel->x;
-            Direction.y = targetPlayer->PlayerModel->y - (player->PlayerModel->y + CameraOffsetYMultiplied);
+            Direction.y = targetPlayer->PlayerModel->y - (player->PlayerModel->y + PlayerEyeOffsetF32(player));
             Direction.z = targetPlayer->PlayerModel->z - player->PlayerModel->z;
             player->AngleDestination = atan2f(Direction.x, Direction.z) * 512.0 / (M_TWOPI) + 256.0;
             if(PlayerAnim)
@@ -620,7 +611,8 @@ void checkAiShoot()
                     for (int shootIndex = 0; shootIndex < getPlayerCurrentGun(player).bulletCountPerShoot; shootIndex++)
                     {
                         // Make a racast to shoot the target
-                        prepareAiRaycast(i, player->target, false);
+                        if (!prepareAiRaycast(i, player->target, false))
+                            break;
                         player->GunWaitCount = 0;
                         float hitDistance = 0;
                         if (Raycast(i, shootIndex, &hitDistance) != NO_PLAYER) // If shoot hit the target, apply damage

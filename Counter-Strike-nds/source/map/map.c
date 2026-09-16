@@ -29,7 +29,7 @@ void UnLoadMap(int mapToUnload)
     }
 
     // Destroy all map models
-    for (int i = 0; i < allMaps[mapToUnload].occlusionZoneCount; i++)
+    for (int i = 0; i < allMaps[mapToUnload].modelCount; i++)
     {
         NE_ModelDelete(allMaps[mapToUnload].models[i].Model);
     }
@@ -58,6 +58,20 @@ void UnLoadMap(int mapToUnload)
     if (allMaps[mapToUnload].AllShadowCollisionBox != NULL)
         free(allMaps[mapToUnload].AllShadowCollisionBox);
 
+    free(allMaps[mapToUnload].AllOcclusionZone);
+    free(allMaps[mapToUnload].raycastWallMasks);
+    allMaps[mapToUnload].AllOcclusionZone = NULL;
+    allMaps[mapToUnload].raycastWallMasks = NULL;
+    allMaps[mapToUnload].AllWallsCollisions = NULL;
+    allMaps[mapToUnload].models = NULL;
+    allMaps[mapToUnload].AllStairs = NULL;
+    allMaps[mapToUnload].AllBombsTriggersCollisions = NULL;
+    allMaps[mapToUnload].AllZones = NULL;
+    allMaps[mapToUnload].AllShadowCollisionBox = NULL;
+    allMaps[mapToUnload].CollisionsCount = 0;
+    allMaps[mapToUnload].modelCount = 0;
+    allMaps[mapToUnload].BombsTriggersCollisionsCount = 0;
+
     LastStairs = 0;
 
     // Destroy grenades
@@ -79,6 +93,7 @@ void LoadMap(int mapToLoad)
 
     LoadAllCollisions(mapToLoad);
     CalculateAllTriggerColBoxs(mapToLoad);
+    BuildRaycastWallMasks(mapToLoad);
     LoadAllStairs(mapToLoad);
 
     LoadAllBombZones(mapToLoad);
@@ -363,7 +378,7 @@ void loadMapModels(int mapToLoad)
     }
     else if (mapToLoad == DUST2_2x2)
     {
-        mapPartCount = 6;
+        mapPartCount = 4;
         mapPos.x = 0;
         mapPos.y = 1.5 + 0.8;
         mapPos.z = 0;
@@ -426,6 +441,11 @@ void loadMapModels(int mapToLoad)
             TextureToLoad(1);
         }
     }
+
+    map->models = calloc(mapPartCount, sizeof(MapModel));
+    if (!map->models)
+        abort(); // Do not proceed to render an incompletely loaded map.
+    map->modelCount = mapPartCount;
 
     // Set for each map parts, position, rotation and scale
     for (int i = 0; i < mapPartCount; i++)

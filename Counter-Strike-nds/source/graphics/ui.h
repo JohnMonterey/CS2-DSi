@@ -152,6 +152,7 @@ void BuyWeapon(int unused);
 void Jump();
 void changeServer(int up);
 void showPartyEventText(int event);
+extern bool bottomScreenWasRendered;
 void showKillText(int killerIndex, int deadPlayerIndex);
 void showConnectedText(int connectedPlayerIndex);
 void showDisconnectedText(int disconnectedPlayerIndex);

@@ -5,6 +5,7 @@
 // This file is part of Counter Strike Nintendo DS Multiplayer Edition (CS:DS)
 
 #include "player.h"
+#include "playermove.h"
 #include "party.h"
 #include "ai.h"
 #include "gun.h"
@@ -154,9 +155,13 @@ void makeHit(int hitBy, int playerHit, float distance, int shootIndex)
  */
 void buyGun()
 {
+    // A category with nothing in it for this team leaves no selection, and every array
+    // below would be indexed with -1.
+    if (GetSelectedGunShop() < 0)
+        return;
     int grenadeIndex = GetSelectedGunShop() - GunCount;
     int equipmentIndex = GetSelectedGunShop() - GunCount - shopGrenadeCount;
-    if (ShopCategory < EQUIPMENT && AllGuns[GetSelectedGunShop()].Price <= localPlayer->Money)
+    if (ShopCategory < EQUIPMENT && GetSelectedGunShop() < GunCount && AllGuns[GetSelectedGunShop()].Price <= localPlayer->Money)
     {
         // Check if the player already have this gun
         if (localPlayer->AllGunsInInventory[1] == GetSelectedGunShop() || localPlayer->AllGunsInInventory[2] == GetSelectedGunShop())
@@ -471,11 +476,13 @@ void removeAllPlayers()
         if (player->PlayerModel != NULL)
         {
             NE_ModelDelete(player->PlayerModel);
+            player->PlayerModel = NULL; // every NULL check elsewhere depends on this
         }
         // Delete physics component
         if (player->PlayerPhysic != NULL)
         {
             NE_PhysicsDelete(player->PlayerPhysic);
+            player->PlayerPhysic = NULL;
         }
     }
 }
@@ -549,6 +556,30 @@ void setShopZone(Player *player)
  *
  * @param PlayerIndex Player index
  */
+float PlayerEyeOffset(const Player *player)
+{
+    if (player == &AllPlayers[0])
+        return PlayerMove_EyeOffset();
+    return CameraOffsetY;
+}
+
+int PlayerEyeOffsetF32(const Player *player)
+{
+    if (player == &AllPlayers[0])
+        return PlayerMove_EyeOffsetF32();
+    return (int)CameraOffsetYMultiplied;
+}
+
+float PlayerFootOffset(const Player *player)
+{
+    // The bomb rests 0.055 above the feet, and the feet are a half extent below
+    // the centre. Only the local player can crouch, so everyone else keeps the
+    // standing 0.845 this was originally written as.
+    if (player == &AllPlayers[0])
+        return (float)PM_HalfExtentQ12(PlayerMove_DuckAmountQ12()) / 4096.0f - 0.055f;
+    return 0.845f;
+}
+
 void CalculatePlayerPosition(int PlayerIndex)
 {
     Player *player = &AllPlayers[PlayerIndex];
@@ -667,11 +698,27 @@ int AddNewPlayer(int NewId, bool IsLocalPlayer, bool isAI)
                 player->PlayerPhysic = NE_PhysicsCreate(NE_BoundingBox);
                 NE_PhysicsSetModel(player->PlayerPhysic, (void *)player->PlayerModel); // Physics object and Model assigned to it
                 NE_PhysicsEnable(player->PlayerPhysic, IsLocalPlayer);
-                NE_PhysicsSetGravity(player->PlayerPhysic, 0.0065);
+                // Gravity is applied by the movement model, not the engine:
+                // Source splits it either side of the move (half before, half
+                // after), and NE stores it as a truncated integer that cannot
+                // represent 22.76 f32/tick^2 without a 3% error in the constant
+                // that sets jump height. Leaving it at zero also makes ground
+                // contact unambiguous -- NE then zeroes yspeed only on a real
+                // collision.
+                NE_PhysicsSetGravity(player->PlayerPhysic, 0);
                 NE_PhysicsSetSize(player->PlayerPhysic, player->xSize * 2.0, player->ySize * 2.0, player->zSize * 2.0);
-                NE_PhysicsSetFriction(player->PlayerPhysic, 1);
+                // Friction is the movement model's job. Nitro Engine's own
+                // friction pass runs after the position update and zeroes all
+                // three speeds once the total falls below about 4 f32/tick --
+                // with no collision involved. PM_EndTick reads a zeroed yspeed
+                // as ground contact, so leaving this on makes a standing jump
+                // report a landing at its apex, where vy passes through zero.
+                NE_PhysicsSetFriction(player->PlayerPhysic, 0);
                 NE_PhysicsOnCollision(player->PlayerPhysic, NE_ColBounce);
                 NE_PhysicsSetBounceEnergy(player->PlayerPhysic, 0);
+                // The movement model's hull state is a file static that outlives
+                // this object, so re-sync it against the box just created.
+                PlayerMove_Reset();
                 UpdateGunTexture();
             }
             else
@@ -976,7 +1023,7 @@ void resetPlayer(int index)
     if (index == 0)
     {
         SetCurrentCameraPlayer(0);
-        frameCountDuringAir = 0;
+        PlayerMove_Reset();
     }
     else
     {

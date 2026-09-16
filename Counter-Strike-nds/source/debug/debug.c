@@ -11,6 +11,7 @@
 #include <fat.h>
 
 #include <NEMain.h>
+#include "dsidev.h"
 
 // File
 FILE *debugFile;
@@ -45,6 +46,7 @@ void initDebug()
  */
 void debugPrint(const char *text)
 {
+    dsidev_log("%s", text);
     // Open the file
     if (debugFile == NULL)
     {
@@ -52,13 +54,14 @@ void debugPrint(const char *text)
     }
 
     // Print the message and a new line
-    fprintf(debugFile, text);
-    fprintf(debugFile, "\n");
+    if (debugFile != NULL)
+        fprintf(debugFile, "%s\n", text);
 
     // Close the file
     if (debugFile != NULL)
     {
         fclose(debugFile);
+        debugFile = NULL;
     }
 }
 
@@ -70,7 +73,8 @@ void debugPrint(const char *text)
 void error_handler(const char *text)
 {
     // Simple handler. You could write this to a file instead, for example.
-    printf(text);
+    printf("%s", text);
+    dsidev_log("Nitro Engine: %s", text);
 
     // Write in the file
     // debugPrint(text);

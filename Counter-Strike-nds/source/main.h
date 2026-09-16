@@ -18,6 +18,10 @@
 // Math functions
 #include <math.h>
 
+// Convert before multiplying, including when callers use fixed-point coordinates.
+static inline float squareFloat(float value) { return value * value; }
+static inline double squareDouble(double value) { return value * value; }
+
 // Wifi
 #include <dswifi9.h>
 #include <sys/socket.h>
@@ -141,7 +145,6 @@
 //////All defines
 #define Degres90 128
 
-#define JumpForce 620
 #define MaxPlayer 10
 #define RaycastDistance 40
 #define RayAccuracy 4
@@ -155,7 +158,8 @@
 #define bombPlantingTime 210 // 3,5 secs
 
 #define maxPoint 58
-#define maxPath 15
+// A simple path can visit every waypoint (Mirage already needs >15 entries).
+#define maxPath maxPoint
 #define ScreenShakeAmount 5
 #define ScreenShakeMinAmount 3
 
@@ -189,7 +193,10 @@
 
 #define FLASH_MODELS_COUNT 6
 
-#define INPUT_COUNT 14
+// Bumping this is safe for existing saves: saveManager writes the count it used
+// ("inputs %d") and the loader reads it back, so an old save declaring 14 loads
+// 14 bindings and leaves the new one at its default.
+#define INPUT_COUNT 15
 #define INPUT_NAMES_COUNT 15
 #define SHOP_DISABLE_TIMER 900
 
@@ -224,6 +231,10 @@ enum inputButtons
 
 	LEFT_GUN = 12,
 	RIGHT_GUN = 13,
+
+	// Unbound by default: every physical DS button already has a job. Assign it
+	// in Options -> Controls.
+	CROUCH_BUTTON = 14,
 };
 
 enum teamEnum
@@ -412,7 +423,6 @@ typedef struct // Player values
 	bool HasBobbed;				  //
 	int Step;					  //
 	char name[PLAYER_MAX_LENGTH]; //
-	bool allPlayerScanned[MaxPlayer];
 	float xSize;
 	float ySize;
 	float zSize;
@@ -578,7 +588,6 @@ extern int changeMinuteTimer;
 extern int LoseCountTerrorists;
 extern int LoseCountCounterTerrorists;
 extern bool bombSet;
-extern int frameCountDuringAir;
 extern bool NeedJump;
 extern bool canChangeGun;
 extern bool canShoot;

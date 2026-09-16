@@ -14,7 +14,6 @@ extern int updateRate;
 extern int xSpeedAdded;
 extern int zSpeedAdded;
 
-void MovePlayer(int CurrentSpeed, float xWithoutY, float zWithoutY, bool *NeedBobbing); /**/
 void RotatePlayer(bool *NeedUpdateViewRotation, bool *SendPosition, float *CameraAngleY);
 void AddAnglesToPlayer(float xAngleToAdd, float yAngleToAdd);
 void UpdateLookRotation(float CameraAngleY);

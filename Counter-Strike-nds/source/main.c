@@ -24,9 +24,11 @@
 #include "saveManager.h"
 #include "input.h"
 #include "player.h"
+#include "playermove.h"
 #include "tutorial.h"
 #include "stats.h"
 #include "camera.h"
+#include "dsidev.h"
 
 //
 //////Level
@@ -46,14 +48,8 @@ int PlayerCount = 0;
 // Old local player position
 float OldxPos, OldyPos, OldzPos = 0;
 // Timer for the player's jump
-int CanJump = 0;
-// CanJumpRealTimer is used wait a little bit of time before the player can jump
-int CanJumpRealTimer = 2;
 
-// Number of frame when the player is in the air
-int frameCountDuringAir = 0;
-// Is the player on stairs?
-bool isOnStairs = false;
+
 // Is the player descending stairs?
 bool isInDownStairs = false;
 // Ask jump from UI button
@@ -240,8 +236,17 @@ int playerWantToStartLimite = 0;
  *
  * @return int Result
  */
-int main(void)
+static void developmentExit(void)
 {
+	closeMusicSteam();
+	Save();
+}
+
+int main(int argc, char **argv)
+{
+#if _LIBNDS_MAJOR_ >= 2
+	lcdSetHBlankIrq(true);
+#endif
 	irqEnable(IRQ_HBLANK);
 	irqSet(IRQ_VBLANK, NE_VBLFunc);
 	irqSet(IRQ_HBLANK, NE_HBLFunc);
@@ -271,6 +276,12 @@ int main(void)
 	}
 
 	initInputs();
+	// Needs libfat (movement.cfg lives on the card) and must be registered
+	// before dsidev_init(), which can start serving assets immediately.
+	PlayerMove_Init();
+	dsidev_set_asset_callback(PlayerMove_ReloadConfig);
+	dsidev_set_exit_callback(developmentExit);
+	dsidev_init(argc, argv);
 
 	// Init default player name
 	strcpy(localPlayer->name, "Player");
@@ -279,7 +290,7 @@ int main(void)
 	Load();
 
 	// Init rumble pack
-	isRumbleInserted();
+	rumbleIsInserted();
 
 	/*if (!nitroFSInit(NULL))
 	{
@@ -655,7 +666,10 @@ int GetTextToShowTimer()
 void SetNeedJump()
 {
 	if (!localPlayer->IsDead && roundState != WAIT_START)
+	{
 		NeedJump = true;
+		PlayerMove_RequestJump();
+	}
 }
 
 void SetSelectedGunShop(int Value)
@@ -741,7 +755,7 @@ void reduceRumbleTimer()
 		RumbleTimer--;
 		// If timer = 0, disable rumble
 		if (RumbleTimer == 0)
-			setRumble(false);
+			rumbleSet(false);
 	}
 }
 
@@ -762,6 +776,12 @@ void reduceDoubleTapTimer()
  */
 void GameLoop()
 {
+	// removeAllPlayers() tears the players down between matches, and this loop runs one
+	// more frame before it notices Connection changed. There is nothing to simulate
+	// without a local player, and every line below assumes there is one.
+	if (localPlayer->PlayerPhysic == NULL || localPlayer->PlayerModel == NULL)
+		return;
+
 	// Read keys
 	readKeys();
 
@@ -792,6 +812,14 @@ void GameLoop()
 	if (isInTutorial)
 		checkTutorial();
 
+	// Both calls above can end the match on the spot: the quit menu's Yes button runs
+	// QuitParty() and the last tutorial step runs initMainMenu(), and either one deletes
+	// every player's model and physics. The spectator branch below would then zero the
+	// local player's speed through a NULL PlayerPhysic -- addresses 0x0C-0x17, the ARM9
+	// exception vectors -- and hang the console so hard that soft reset stops working.
+	if (localPlayer->PlayerPhysic == NULL || localPlayer->PlayerModel == NULL)
+		return;
+
 	// If local player is not a spectator
 	if (localPlayer->Team != SPECTATOR)
 	{
@@ -817,43 +845,7 @@ void GameLoop()
 
 		isInDownStairs = false;
 		// Check if the player is on a stairs
-		CheckStairs(&CanJump, &isInDownStairs);
-
-		// Reduce jump timer
-		if (CanJump > 0)
-			CanJump--;
-
-		// Check for jump
-		if (roundState != WAIT_START && !localPlayer->IsDead)
-		{
-			// CanJumpRealTimer is used wait a little bit of time before the player can jump
-			// Set CanJumpReal timer
-			if (localPlayer->PlayerPhysic->yspeed == 0 && CanJumpRealTimer > 0)
-				CanJumpRealTimer--;
-			else if (localPlayer->PlayerPhysic->yspeed != 0)
-				CanJumpRealTimer = 2;
-
-			// If player is in the air, increase the frameCountDuringAir
-			if (CanJumpRealTimer != 0 && !isInDownStairs)
-				frameCountDuringAir++;
-			else if ((CanJumpRealTimer == 0 || isInDownStairs) && frameCountDuringAir > 20) // Make jump land sound if the player was more than 0,33 secs in the air
-			{
-				frameCountDuringAir = 0;
-				Play2DSound(SFX_LAND, 140);
-				NeedJump = false;
-			}
-			else
-				frameCountDuringAir = 0;
-
-			// If the player can jump and if jump input is down
-			if ((isKeyDown(JUMP_BUTTON) || NeedJump) && (CanJumpRealTimer == 0 || CanJump > 0))
-			{
-				// Apply force on the player
-				NeedJump = false;
-				localPlayer->PlayerPhysic->yspeed = JumpForce;
-				CanJump = 0;
-			}
-		}
+		CheckStairs(&isInDownStairs);
 
 		// Set aiming view
 		if (isKeyDown(SCOPE_BUTTON))
@@ -862,7 +854,10 @@ void GameLoop()
 		}
 
 		Player *playerWithView = &AllPlayers[CurrentCameraPlayer];
-		float cameraFinalY = playerWithView->position.y + CameraOffsetY;
+		// Eye height drops when crouching, for the local player only -- remote
+		// players never duck in this version.
+		float eyeOffset = (CurrentCameraPlayer == 0) ? PlayerMove_EyeOffset() : CameraOffsetY;
+		float cameraFinalY = playerWithView->position.y + eyeOffset;
 
 		// Set camera position
 		NE_CameraSet(Camera,
@@ -1035,7 +1030,7 @@ void GameLoop()
 		}
 		else if (getPlayerCurrentGunIndex(localPlayer) >= GunCount + shopGrenadeCount && isKey(FIRE_BUTTON) && !isLocalPlayerMoving())
 		{
-			if (getPlayerCurrentGunIndex(localPlayer) == GunCount + shopGrenadeCount && CanPutBomb && roundState == PLAYING && !BombPlanted && (CanJumpRealTimer == 0 || CanJump > 0))
+			if (getPlayerCurrentGunIndex(localPlayer) == GunCount + shopGrenadeCount && CanPutBomb && roundState == PLAYING && !BombPlanted && PlayerMove_IsOnGround())
 			{
 				isUsingBomb = true;
 				// On bomb planting make a sound
@@ -1049,7 +1044,7 @@ void GameLoop()
 				if (localPlayer->bombTimer == 0)
 				{
 					BombPosition.x = localPlayer->position.x;
-					BombPosition.y = localPlayer->position.y - 0.845;
+					BombPosition.y = localPlayer->position.y - PlayerFootOffset(localPlayer);
 					BombPosition.z = localPlayer->position.z;
 					BombPosition.r = localPlayer->Angle;
 
@@ -1102,7 +1097,7 @@ void GameLoop()
 				SendPositionData = 0;
 			}
 		}
-		else if (isKey(DEFUSE_BUTTON) && canDefuseBomb && (roundState == PLAYING || roundState == END_ROUND) && !BombDefused && BombPlanted && localPlayer->Team == COUNTERTERRORISTS && !isLocalPlayerMoving()) // Defuse bomb
+		else if (isKey(DEFUSE_BUTTON) && canDefuseBomb && (roundState == PLAYING || roundState == END_ROUND) && !BombDefused && BombPlanted && localPlayer->Team == COUNTERTERRORISTS && !isLocalPlayerMoving() && PlayerMove_IsOnGround()) // Defuse bomb
 		{
 			isUsingBomb = true;
 			// On bomb defuse make a sound
@@ -1163,21 +1158,16 @@ void GameLoop()
 			}
 		}
 
-		// Reset player speed
-		localPlayer->PlayerPhysic->xspeed = 0;
-		localPlayer->PlayerPhysic->zspeed = 0;
+		// Player movements: friction, acceleration, air control, jump and
+		// stamina, as CS:GO does them. Velocity is handed to Nitro Engine here
+		// and the collision result is absorbed in UpdateEngine(), which is
+		// where the engine actually integrates the local player.
+		PlayerMove_Tick(xWithoutY, zWithoutY,
+						roundState == WAIT_START || localPlayer->IsDead);
 
-		// Player movements
-		bool NeedBobbing = false;
-		int CurrentSpeed = defaultWalkSpeed;
-		if (getPlayerCurrentGunIndex(localPlayer) < GunCount)
-			CurrentSpeed = getPlayerCurrentGun(localPlayer).WalkSpeed;
-
-		if (roundState != WAIT_START && !localPlayer->IsDead)
-			MovePlayer(CurrentSpeed, xWithoutY, zWithoutY, &NeedBobbing);
-
-		// Gun headbobing
-		if (NeedBobbing && (CanJumpRealTimer == 0 || CanJump > 0))
+		// Gun headbobing, driven by real speed rather than by "a key is down",
+		// so it eases in and out with the acceleration.
+		if (PlayerMove_IsOnGround() && PlayerMove_SpeedCS() > 20)
 		{
 			ApplyGunWalkAnimation(0);
 		}
@@ -1236,7 +1226,7 @@ void GameLoop()
 						{
 							CalculatePlayerPosition(i);
 							BombPosition.x = player->position.x;
-							BombPosition.y = player->position.y - 0.845;
+							BombPosition.y = player->position.y - PlayerFootOffset(player);
 							BombPosition.z = player->position.z;
 							BombPosition.r = player->Angle;
 
@@ -1352,7 +1342,7 @@ void GameLoop()
 					if (player->IsDead || player->Id == NO_PLAYER)
 						continue;
 
-					float Distance = (float)sqrt(pow(player->PlayerModel->x - BombPosition.x * 4096.0, 2.0) + pow(player->PlayerModel->y - BombPosition.y * 4096.0, 2.0) + pow(player->PlayerModel->z - BombPosition.z * 4096.0, 2.0)) / 8096.0;
+					float Distance = (float)sqrt(squareDouble(player->PlayerModel->x - BombPosition.x * 4096.0) + squareDouble(player->PlayerModel->y - BombPosition.y * 4096.0) + squareDouble(player->PlayerModel->z - BombPosition.z * 4096.0)) / 8096.0;
 					if (Distance > 19)
 						Distance = 0;
 
@@ -1388,7 +1378,7 @@ void GameLoop()
  */
 bool isLocalPlayerMoving()
 {
-	return localPlayer->PlayerPhysic->xspeed + localPlayer->PlayerPhysic->yspeed + localPlayer->PlayerPhysic->zspeed != 0;
+	return PlayerMove_IsMoving();
 }
 
 /**
@@ -1398,6 +1388,7 @@ bool isLocalPlayerMoving()
 void UpdateEngineNotInGame()
 {
 	ScanForInput();
+	dsidev_poll();
 
 	increaseFrameCount();
 
@@ -1405,6 +1396,7 @@ void UpdateEngineNotInGame()
 		UpdateBottomScreenFrameCount--;
 
 	// Draw UI and 3D
+	bottomScreenWasRendered = false;
 	if (!isDebugBottomScreen)
 	{
 		NE_ProcessDual(Draw3DSceneNotInGame, drawBottomScreenUI);
@@ -1426,8 +1418,23 @@ void UpdateEngineNotInGame()
 		}
 	}
 
-	NE_WaitForVBL(NE_CAN_SKIP_VBL);
+	// Never NE_CAN_SKIP_VBL. NE_ProcessDual toggles POWER_SWAP_LCDS, reassigns VRAM
+	// banks C and D, arms the display capture and DMAs to OAM_SUB; all of it has to
+	// land inside VBlank. Skipping the wait on an overrunning frame does it mid-scanout
+	// instead, which puts part of one screen's image on the other. A frame that runs
+	// long should cost a frame, not a torn swap.
+	NE_WaitForVBL(0);
 }
+
+/**
+ * @brief Report frames that overran their refresh, at most once a second
+ *
+ * A frame over 100% missed its refresh and now costs a whole extra one, so this is the
+ * measure of how much headroom the render loop actually has.
+ */
+// True when the previous frame used NE_ProcessDual. The two render paths differ in
+// whether they toggle POWER_SWAP_LCDS, so each crossing needs one toggle by hand.
+static bool wasDualLastFrame = true;
 
 /**
  * @brief Increase the frame count (used for the server to know the speed of actions)
@@ -1459,28 +1466,60 @@ void resetFrameCount()
 void UpdateEngine()
 {
 	ScanForInput();
+	dsidev_poll();
 
 	increaseFrameCount();
 
-	if (!isDebugBottomScreen)
-	{
-		// Draw 3D objects and sprites
-		if (!AlwaysUpdateBottomScreen && UpdateBottomScreenFrameCount == 0)
-			NE_Process(Draw3DScene);
-		else
-		{
-			if (UpdateBottomScreenFrameCount > 0)
-				UpdateBottomScreenFrameCount--;
+	// Pick the render path for this frame.
+	//
+	// NE_ProcessDual toggles POWER_SWAP_LCDS on every call; NE_Process never does. The
+	// display capture depends on exactly one toggle per frame, because the geometry a call
+	// submits is not displayed until the NEXT frame, by which point the LCDs have swapped
+	// again. Crossing between the two paths therefore drops or adds a toggle, and the
+	// pending buffer gets shown with the panels the wrong way round -- one screen's picture
+	// appearing on the other. Rather than give up the 60 Hz single-screen path, compensate
+	// by hand at each crossing.
+	bool wantDual = !isDebugBottomScreen &&
+					(AlwaysUpdateBottomScreen || UpdateBottomScreenFrameCount > 0);
 
-			NE_ProcessDual(Draw3DScene, drawBottomScreenUI);
+	// Leaving is only safe the frame after one that submitted the top scene, since that is
+	// the content the first single-screen frame puts on screen. bottomScreenWasRendered
+	// still holds the previous frame's value here.
+	if (!wantDual && wasDualLastFrame && bottomScreenWasRendered)
+		wantDual = true;
+
+	if (wantDual != wasDualLastFrame)
+	{
+		// One toggle, either way. Entering, it cancels the one NE_ProcessDual is about to
+		// do, so the top scene already in flight stays on the top LCD. Leaving, it stands
+		// in for the toggle NE_Process will not perform.
+		REG_POWERCNT ^= POWER_SWAP_LCDS;
+
+		if (!wantDual)
+		{
+			// Hand the sub engine the bank holding the captured bottom UI, so the lower
+			// screen keeps showing the menu while the single-screen path runs. This is the
+			// same bank configuration NE_ProcessDual uses for its lower-screen phase.
+			vramSetBankC(VRAM_C_LCD);
+			vramSetBankD(VRAM_D_SUB_SPRITE);
 		}
+	}
+	wasDualLastFrame = wantDual;
+
+	bottomScreenWasRendered = false;
+	if (wantDual)
+	{
+		if (UpdateBottomScreenFrameCount > 0)
+			UpdateBottomScreenFrameCount--;
+
+		NE_ProcessDual(Draw3DScene, drawBottomScreenUI);
 	}
 	else
 	{
 		if (UpdateBottomScreenFrameCount > 0)
 			UpdateBottomScreenFrameCount--;
 
-		NE_Process(Draw3DScene); // For debug
+		NE_Process(Draw3DScene);
 	}
 
 	if (uiTimer > 0)
@@ -1497,9 +1536,20 @@ void UpdateEngine()
 
 	// Update physics and animations
 	if (localPlayer->Id != UNUSED && localPlayer->Team != SPECTATOR)
+	{
 		NE_PhysicsUpdate(localPlayer->PlayerPhysic);
+		// Nitro Engine zeroes the speed on any axis it resolved, which is how
+		// the movement model learns it landed or hit a wall.
+		PlayerMove_PostPhysics();
+	}
 
-	NE_WaitForVBL(NE_CAN_SKIP_VBL);
+	// Never NE_CAN_SKIP_VBL. NE_ProcessDual toggles POWER_SWAP_LCDS, reassigns VRAM
+	// banks C and D, arms the display capture and DMAs to OAM_SUB; all of it has to
+	// land inside VBlank. Skipping the wait on an overrunning frame does it mid-scanout
+	// instead, which puts part of one screen's image on the other. A frame that runs
+	// long should cost a frame, not a torn swap.
+	NE_WaitForVBL(0);
+
 }
 
 /**
@@ -1541,7 +1591,7 @@ void rumble(int timer)
 {
 	if (useRumble)
 	{
-		setRumble(true);
+		rumbleSet(true);
 		RumbleTimer = timer;
 	}
 }
@@ -1559,7 +1609,7 @@ void dropBomb(Player *HittedClient, int hittedPlayerIndex)
 	SetGunInInventoryForNonLocalPlayer(hittedPlayerIndex, EMPTY, 8);
 	//  Set the position of the dropped bomb (so the player position)
 	droppedBombPositionAndRotation.x = HittedClient->position.x;
-	droppedBombPositionAndRotation.y = HittedClient->position.y - 0.845;
+	droppedBombPositionAndRotation.y = HittedClient->position.y - PlayerFootOffset(HittedClient);
 	droppedBombPositionAndRotation.z = HittedClient->position.z;
 	droppedBombPositionAndRotation.r = HittedClient->Angle;
 	NE_ModelSetCoord(Model[7], droppedBombPositionAndRotation.x, droppedBombPositionAndRotation.y, droppedBombPositionAndRotation.z);

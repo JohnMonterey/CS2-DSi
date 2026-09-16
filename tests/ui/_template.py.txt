@@ -1,0 +1,27 @@
+"""Copy to tests/ui/<name>.py and edit. Files starting with _ are not collected.
+
+Available on `emu`:
+    emu.wait(seconds)
+    emu.press(button, frames=6)        button: A B X Y L R Start Select Up Down Left Right
+    emu.hold(button, seconds)
+    emu.touch(x, y)                    DS touch coordinates, 0-255 x 0-191
+    emu.swipe((x1, y1), (x2, y2))
+    emu.focus()                        bring melonDS forward (shot() does this already)
+
+`shot(label)` captures both screens normalised to 256x384 and compares against
+tests/ui/refs/<test>/<label>.bmp. It raises on a mismatch, so the first failing
+checkpoint ends the test -- put the cheapest, most diagnostic checkpoint first.
+"""
+
+NAME = "what this test proves, in one line"
+
+TOLERANCE = {"max_mean": 2.0, "max_changed": 0.01}
+
+
+def run(emu, shot):
+    emu.wait(3.0)
+    shot("start_state")
+
+    emu.touch(128, 96)
+    emu.wait(1.0)
+    shot("after_touch")

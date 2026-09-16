@@ -6,6 +6,7 @@
 
 #include "main.h"
 #include "ui.h"
+#include "playermove.h"
 #include "movements.h"
 #include "collisions.h"
 #include "keyboard.h"
@@ -33,6 +34,12 @@ int serverListOffset = 0;
 
 // Current selected map in the map list menu
 int currentSelectionMap = DUST2;
+
+// TEMPORARY: the map selection menu neither loads nor draws the map preview image. Set to
+// 1 to bring it back. Create, reload, draw and free are all switched together because the
+// material and palette slots are shared with the shop's gun preview, which leaves stale
+// pointers in them: freeing without having created would delete the shop's a second time.
+#define SHOW_MAP_SELECTION_IMAGE 0
 
 // Is showin the map in game
 bool isShowingMap = false;
@@ -413,6 +420,37 @@ void ChangeMenu(int menuId)
  *
  * @param categoryId
  */
+/**
+ * @brief Load the shop preview texture for a selection, if that selection exists
+ *
+ * A category that holds nothing for the current team leaves the selection at -1, and the
+ * equipment branch used to index the grenade array. Both read out of bounds and handed
+ * Nitro Engine a garbage pointer, which then crashed inside its BMP loader.
+ */
+static void loadShopTexture(int selected)
+{
+    void *texture = NULL;
+    if (ShopCategory < EQUIPMENT)
+    {
+        if (selected >= 0 && selected < GunCount)
+            texture = AllGuns[selected].texture;
+    }
+    else if (ShopCategory == GRENADES)
+    {
+        int grenadeIndex = selected - GunCount;
+        if (grenadeIndex >= 0 && grenadeIndex < shopGrenadeCount)
+            texture = GetAllGrenades()[grenadeIndex].texture;
+    }
+    else if (ShopCategory == EQUIPMENT)
+    {
+        int equipmentIndex = selected - GunCount - shopGrenadeCount;
+        if (equipmentIndex >= 0 && equipmentIndex < equipementCount)
+            texture = allEquipments[equipmentIndex].texture;
+    }
+    if (texture != NULL)
+        NE_MaterialTexLoadBMPtoRGB256(BottomScreenSpritesMaterials[6], Palettes[10], texture, 1);
+}
+
 void OpenShopCategory(int categoryId)
 {
     SetSelectedGunShop(-1);
@@ -516,12 +554,7 @@ void ChangeShopElement(int Left)
     NE_MaterialDelete(BottomScreenSpritesMaterials[6]);
     BottomScreenSpritesMaterials[6] = NE_MaterialCreate();
     Palettes[10] = NE_PaletteCreate();
-    if (ShopCategory < EQUIPMENT)
-        NE_MaterialTexLoadBMPtoRGB256(BottomScreenSpritesMaterials[6], Palettes[10], AllGuns[Selected].texture, 1);
-    else if (ShopCategory == GRENADES)
-        NE_MaterialTexLoadBMPtoRGB256(BottomScreenSpritesMaterials[6], Palettes[10], GetAllGrenades()[Selected - GunCount].texture, 1);
-    else if (ShopCategory == EQUIPMENT)
-        NE_MaterialTexLoadBMPtoRGB256(BottomScreenSpritesMaterials[6], Palettes[10], allEquipments[Selected - GunCount - shopGrenadeCount].texture, 1);
+    loadShopTexture(Selected);
 
     SetSelectedGunShop(Selected);
 
@@ -563,12 +596,14 @@ void ChangeMap(int Left)
 
     MapImgToLoad = currentSelectionMap;
 
+#if SHOW_MAP_SELECTION_IMAGE
     // Update texture
     NE_PaletteDelete(Palettes[10]);
     NE_MaterialDelete(BottomScreenSpritesMaterials[6]);
     BottomScreenSpritesMaterials[6] = NE_MaterialCreate();
     Palettes[10] = NE_PaletteCreate();
     NE_MaterialTexLoadBMPtoRGB256(BottomScreenSpritesMaterials[6], Palettes[10], allMaps[currentSelectionMap].image, 1);
+#endif
 }
 
 void setQuitButton(bool value)
@@ -986,6 +1021,19 @@ void drawTopScreenUI()
                          NE_White, // Color
                          CPU);
 
+            // DEBUG movement state. Speed is in CS units per second so it can
+            // be read straight against CS:GO's numbers: 250 running with a
+            // knife, 200 with an AWP, 30 is the air-strafe cap.
+            char MoveText[40];
+            sprintf(MoveText, "%d u/s %s stam%d%% duck%d", PlayerMove_SpeedCS(),
+                    PlayerMove_IsOnGround() ? "gnd" : "air",
+                    PlayerMove_StaminaPercent(),
+                    (int)(PlayerMove_DuckAmount() * 100.0f));
+            NE_TextPrint(0,        // Font slot
+                         1, 2,     // Coordinates x(column), y(row)
+                         NE_White, // Color
+                         MoveText);
+
             char CPU2[120] = "";
             for (int i = 0; i < MaxPlayer; i++)
             {
@@ -1376,7 +1424,7 @@ void drawTopScreenUI()
             if (grenades[i] != NULL && grenades[i]->GrenadeType == SMOKE && grenades[i]->Timer == 0)
             {
                 // Calculate distances
-                float smokeDistance = sqrtf(powf(selectPlayer->PlayerModel->x - grenades[i]->Model->x, 2.0) + powf(selectPlayer->PlayerModel->y - grenades[i]->Model->y, 2.0) + powf(selectPlayer->PlayerModel->z - grenades[i]->Model->z, 2.0)) / 26000.0; // fFor smoke detection
+                float smokeDistance = sqrtf(squareFloat(selectPlayer->PlayerModel->x - grenades[i]->Model->x) + squareFloat(selectPlayer->PlayerModel->y - grenades[i]->Model->y) + squareFloat(selectPlayer->PlayerModel->z - grenades[i]->Model->z)) / 26000.0; // fFor smoke detection
 
                 // Set a minimum limit to the smoke detection distance
                 if (smokeDistance > 1)
@@ -1473,8 +1521,12 @@ void drawTopScreenUI()
  * @brief Draw bottom screen UI
  *
  */
+bool bottomScreenWasRendered = false;
+
 void drawBottomScreenUI()
 {
+    bottomScreenWasRendered = true;
+
     // Set view in 2D mode
     NE_2DViewInit();
 
@@ -1860,12 +1912,7 @@ void initShopMenu()
 
     BottomScreenSpritesMaterials[6] = NE_MaterialCreate();
     Palettes[10] = NE_PaletteCreate();
-    if (ShopCategory < EQUIPMENT)
-        NE_MaterialTexLoadBMPtoRGB256(BottomScreenSpritesMaterials[6], Palettes[10], AllGuns[GetSelectedGunShop()].texture, 1);
-    else if (ShopCategory == GRENADES)
-        NE_MaterialTexLoadBMPtoRGB256(BottomScreenSpritesMaterials[6], Palettes[10], GetAllGrenades()[GetSelectedGunShop() - GunCount].texture, 1);
-    else if (ShopCategory == EQUIPMENT)
-        NE_MaterialTexLoadBMPtoRGB256(BottomScreenSpritesMaterials[6], Palettes[10], GetAllGrenades()[GetSelectedGunShop() - GunCount - shopGrenadeCount].texture, 1);
+    loadShopTexture(GetSelectedGunShop());
     setQuitButton(true);
 
     // Buy button
@@ -2342,7 +2389,14 @@ void initControlsChangeMenu()
         AllButtons[3].yTextPos = 4;
         AllButtons[3].text = "Next weapon";
 
-        SetButtonToShow(4);
+        // Slot 2 on this page is input index 14, which drawControlsChangeMenu()
+        // already reads as inputs[2 + controlsPage * 6].
+        AllButtons[4].parameter = CROUCH_BUTTON;
+        AllButtons[4].xTextPos = 6;
+        AllButtons[4].yTextPos = 9;
+        AllButtons[4].text = "Crouch";
+
+        SetButtonToShow(5);
     }
 
     AllButtons[3].xPos = 140;
@@ -2397,9 +2451,11 @@ void initSelectionMapImageMenu()
 
     setQuitButton(true);
 
+#if SHOW_MAP_SELECTION_IMAGE
     BottomScreenSpritesMaterials[6] = NE_MaterialCreate();
     Palettes[10] = NE_PaletteCreate();
     NE_MaterialTexLoadBMPtoRGB256(BottomScreenSpritesMaterials[6], Palettes[10], allMaps[currentSelectionMap].image, 1);
+#endif
 
     // Set change controls button
     AllButtons[0].xPos = 35;
@@ -3223,7 +3279,9 @@ void drawSelectionMapImageMenu()
                  NE_White, // Color
                  "Select map");
 
+#if SHOW_MAP_SELECTION_IMAGE
     NE_2DDrawTexturedQuad(0 + 32, 20, 192 + 32, 139 + 20, 3, BottomScreenSpritesMaterials[6]); // Draw map image
+#endif
 
     // Text background
     NE_PolyFormat(15, 0, NE_LIGHT_0, NE_CULL_BACK, NE_MODULATION);
@@ -3417,9 +3475,11 @@ void unloadControllerMenu()
  */
 void unloadSelectionMapImageMenu()
 {
+#if SHOW_MAP_SELECTION_IMAGE
     // Delete shop gun preview image
     NE_MaterialDelete(BottomScreenSpritesMaterials[6]);
     NE_PaletteDelete(Palettes[10]);
+#endif
 }
 
 /**

@@ -13,6 +13,7 @@
 #include "player.h"
 #include "sounds.h"
 #include "movements.h"
+#include "playermove.h"
 #include "map.h"
 #include "party.h"
 
@@ -2113,8 +2114,27 @@ void CreateWall(float xPos, float yPos, float zPos, float xSize, float ySize, fl
  */
 void CalculatePlayerColBox(int playerIndex)
 {
+    static struct
+    {
+        bool valid;
+        Vector3Int position;
+        Vector3 size;
+        CollisionBox box;
+    } cache[MaxPlayer];
     CalculatePlayerPosition(playerIndex);
     Player *player = &AllPlayers[playerIndex];
+
+    if (cache[playerIndex].valid &&
+        cache[playerIndex].position.x == player->PlayerModel->x &&
+        cache[playerIndex].position.y == player->PlayerModel->y &&
+        cache[playerIndex].position.z == player->PlayerModel->z &&
+        cache[playerIndex].size.x == player->xSize &&
+        cache[playerIndex].size.y == player->ySize &&
+        cache[playerIndex].size.z == player->zSize)
+    {
+        player->PlayerCollisionBox = cache[playerIndex].box;
+        return;
+    }
 
     float xSize = player->xSize;
     float ySize = player->ySize;
@@ -2126,6 +2146,10 @@ void CalculatePlayerColBox(int playerIndex)
     player->PlayerCollisionBox.BoxYRangeB = (player->position.y - ySize) * 4096.0;
     player->PlayerCollisionBox.BoxZRangeA = (player->position.z + zSize) * 4096.0;
     player->PlayerCollisionBox.BoxZRangeB = (player->position.z - zSize) * 4096.0;
+    cache[playerIndex].valid = true;
+    cache[playerIndex].position = (Vector3Int){player->PlayerModel->x, player->PlayerModel->y, player->PlayerModel->z};
+    cache[playerIndex].size = (Vector3){xSize, ySize, zSize};
+    cache[playerIndex].box = player->PlayerCollisionBox;
 }
 
 /**
@@ -2456,7 +2480,7 @@ int LastStairs = 0;
  * @param canJump
  * @param isInDownStairs
  */
-void CheckStairs(int *canJump, bool *isInDownStairs)
+void CheckStairs(bool *isInDownStairs)
 {
     bool firstScan = true;
     // To optimize, start scan on old stairs to avoid checking all other stairs
@@ -2483,11 +2507,17 @@ void CheckStairs(int *canJump, bool *isInDownStairs)
                 if (localPlayer->PlayerPhysic->yspeed < 100)
                     localPlayer->PlayerPhysic->yspeed = 0;
 
-                // Change the player position
-                localPlayer->position.y = yVal;
+                // yVal is the centre height of a STANDING hull (feet at
+                // yVal - 0.9). Crouching drops the centre while the feet stay
+                // put, so snapping the centre to yVal would lift a ducked
+                // player clear of the ramp. Snap the FEET instead.
+                localPlayer->position.y =
+                    yVal - (PM_HalfExtentQ12(0) - (int)(localPlayer->ySize * 4096.0f)) / 4096.0f;
                 NE_ModelSetCoord(localPlayer->PlayerModel, localPlayer->position.x, localPlayer->position.y, localPlayer->position.z);
-                // Player will be able to jump because he is touching the ground
-                *canJump = 10;
+                // The ramp moved the player onto a surface outside the physics
+                // engine, so tell the movement model directly -- it would
+                // otherwise see no collision and keep the player airborne.
+                PlayerMove_NotifyStairSnap();
             }
             if (localPlayer->position.y == yVal)
                 *isInDownStairs = true;
@@ -2503,6 +2533,85 @@ void CheckStairs(int *canJump, bool *isInDownStairs)
             i = 0;
         }
     }
+}
+
+/**
+ * @brief Is there headroom for the local player to stand up from a crouch?
+ *
+ * Nitro Engine cannot be asked "would this box fit here", so test the standing
+ * hull against the map's wall boxes directly. This only runs while the player
+ * is ducked and has released the crouch button, so the sweep is rare.
+ *
+ * @param onGround true when the feet stay planted and the hull grows upward;
+ *                 false when the head stays put and it grows downward.
+ */
+bool CanPlayerStandUp(bool onGround)
+{
+    Player *player = &AllPlayers[0];
+    if (player->PlayerModel == NULL)
+        return true;
+
+    // 0.9 world units, in f32.
+    const int standHalf = PM_HalfExtentQ12(0);
+    int nowHalf = (int)(player->ySize * 4096.0f);
+    if (nowHalf >= standHalf)
+        return true;
+
+    // Test only the slab standing up would NEWLY occupy, not the whole hull.
+    // Testing the whole hull fails against the floor the player is already
+    // standing on: CreateWall() stores the wall position as (int)(y * 8192)
+    // while Nitro Engine stores the model at (int)(y * 4096) and rests the
+    // player on otherposy + (sizeSum >> 1), so the two derivations disagree by
+    // up to two units in the doubled domain and the floor reads as an overlap.
+    int centre = player->PlayerModel->y;
+    int minY, maxY;
+    if (onGround)
+    {
+        // Feet stay planted and the hull grows upward.
+        minY = centre + nowHalf;
+        maxY = centre + 2 * standHalf - nowHalf;
+    }
+    else
+    {
+        // Head stays put and the hull grows downward.
+        minY = centre + nowHalf - 2 * standHalf;
+        maxY = centre - nowHalf;
+    }
+    if (maxY <= minY)
+        return true;
+
+    // Wall boxes live in a doubled fixed-point scale: CreateWall() stores the
+    // position multiplied by 8192 while the half-size stays at 4096, so one
+    // world unit is 8192 here and model coordinates need doubling to match.
+    int xHalf = (int)(player->xSize * 8192.0f);
+    int zHalf = (int)(player->zSize * 8192.0f);
+
+    int boxMinX = player->PlayerModel->x * 2 - xHalf;
+    int boxMaxX = player->PlayerModel->x * 2 + xHalf;
+    int boxMinZ = player->PlayerModel->z * 2 - zHalf;
+    int boxMaxZ = player->PlayerModel->z * 2 + zHalf;
+    int boxMinY = minY * 2;
+    int boxMaxY = maxY * 2;
+
+    Wall *walls = getMapWalls();
+    int wallCountToCheck = getMapWallsCount();
+    if (walls == NULL)
+        return true;
+
+    for (int i = 0; i < wallCountToCheck; i++)
+    {
+        CollisionBox *box = &walls[i].WallCollisionBox;
+
+        // Strict comparisons, to match the engine: a player resting exactly on
+        // a surface is touching it, not inside it.
+        if (boxMinX < box->BoxXRangeA && boxMaxX > box->BoxXRangeB &&
+            boxMinY < box->BoxYRangeA && boxMaxY > box->BoxYRangeB &&
+            boxMinZ < box->BoxZRangeA && boxMaxZ > box->BoxZRangeB)
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 /**

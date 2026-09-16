@@ -19,49 +19,6 @@ int zSpeedAdded = 0;
 int fovCheckAngle = 80;
 
 /**
- * @brief Move player according to his speed and direction
- *
- * @param CurrentSpeed Speed
- * @param xWithoutY X direction
- * @param zWithoutY Z direction
- * @param NeedBobbing Need to bobbing
- */
-void MovePlayer(int CurrentSpeed, float xWithoutY, float zWithoutY, bool *NeedBobbing)
-{
-    // Move forward/backward
-    if (isKey(UP_BUTTON))
-    {
-        localPlayer->PlayerPhysic->xspeed += CurrentSpeed * xWithoutY * 2;
-        localPlayer->PlayerPhysic->zspeed += CurrentSpeed * zWithoutY * 2;
-        *NeedBobbing = true;
-    }
-    else if (isKey(DOWN_BUTTON))
-    {
-        localPlayer->PlayerPhysic->xspeed += -CurrentSpeed * xWithoutY * 2;
-        localPlayer->PlayerPhysic->zspeed += -CurrentSpeed * zWithoutY * 2;
-        *NeedBobbing = true;
-    }
-
-    // Move left/right
-    if (isKey(RIGHT_BUTTON))
-    {
-        localPlayer->PlayerPhysic->xspeed += CurrentSpeed * -zWithoutY * 2;
-        localPlayer->PlayerPhysic->zspeed += CurrentSpeed * xWithoutY * 2;
-        *NeedBobbing = true;
-    }
-    else if (isKey(LEFT_BUTTON))
-    {
-        localPlayer->PlayerPhysic->xspeed += CurrentSpeed * zWithoutY * 2;
-        localPlayer->PlayerPhysic->zspeed += CurrentSpeed * -xWithoutY * 2;
-        *NeedBobbing = true;
-    }
-
-    // Total of speed
-    xSpeedAdded = abs(localPlayer->PlayerPhysic->xspeed);
-    zSpeedAdded = abs(localPlayer->PlayerPhysic->zspeed);
-}
-
-/**
  * @brief Add angle to local player
  *
  * @param xAngleToAdd X angle to add
@@ -213,12 +170,12 @@ void UpdateLookRotation(float CameraAngleY)
     float TempS = AllPlayers[GetCurrentCameraPlayer()].Angle / 512.0 * M_TWOPI;
     float TempT = (384 - CameraAngleY) / 512.0 * M_TWOPI;
 
-    double cosTempT = cos(TempT);
-    double cosTempS = cos(TempS);
-    double SinTempS = sin(TempS);
+    float cosTempT = cosf(TempT);
+    float cosTempS = cosf(TempS);
+    float SinTempS = sinf(TempS);
 
     x = SinTempS * cosTempT;
-    y = -sin(TempT);
+    y = -sinf(TempT);
     z = cosTempS * cosTempT;
 
     xWithoutY = -SinTempS;
@@ -227,9 +184,8 @@ void UpdateLookRotation(float CameraAngleY)
     // Values for map
     if (isShowingMap)
     {
-        float TempSForMap = (AllPlayers[GetCurrentCameraPlayer()].Angle) / 512.0 * M_TWOPI;
-        xWithoutYForMap = -sin(TempSForMap);
-        zWithoutYForMap = -cos(TempSForMap);
+        xWithoutYForMap = xWithoutY;
+        zWithoutYForMap = zWithoutY;
     }
 
     // Values for audio and occlusions
@@ -238,15 +194,14 @@ void UpdateLookRotation(float CameraAngleY)
         float TempSside1 = (AllPlayers[GetCurrentCameraPlayer()].Angle - 80) / 512.0 * M_TWOPI;
         float TempSside2 = (AllPlayers[GetCurrentCameraPlayer()].Angle + 80) / 512.0 * M_TWOPI;
 
-        float TempSForAudio = (AllPlayers[GetCurrentCameraPlayer()].Angle - 128) / 512.0 * M_TWOPI;
+        // A quarter-turn uses the same sine/cosine pair.
+        xWithoutYForAudio = cosTempS;
+        zWithoutYForAudio = -SinTempS;
 
-        xWithoutYForAudio = -sin(TempSForAudio);
-        zWithoutYForAudio = -cos(TempSForAudio);
-
-        xWithoutYForOcclusionSide1 = -sin(TempSside1);
-        zWithoutYForOcclusionSide1 = -cos(TempSside1);
-        xWithoutYForOcclusionSide2 = -sin(TempSside2);
-        zWithoutYForOcclusionSide2 = -cos(TempSside2);
+        xWithoutYForOcclusionSide1 = -sinf(TempSside1);
+        zWithoutYForOcclusionSide1 = -cosf(TempSside1);
+        xWithoutYForOcclusionSide2 = -sinf(TempSside2);
+        zWithoutYForOcclusionSide2 = -cosf(TempSside2);
 
         updateRate = 2;
     }
@@ -268,12 +223,12 @@ void UpdateLookRotationAI(float CameraAngleY, float angle, float *x, float *y, f
     float TempS = angle / 512.0 * M_TWOPI;
     float TempT = (384 - CameraAngleY) / 512.0 * M_TWOPI;
 
-    double cosTempT = cos(TempT);
-    double cosTempS = cos(TempS);
-    double SinTempS = sin(TempS);
+    float cosTempT = cosf(TempT);
+    float cosTempS = cosf(TempS);
+    float SinTempS = sinf(TempS);
 
     *x = SinTempS * cosTempT;
-    *y = -sin(TempT);
+    *y = -sinf(TempT);
     *z = cosTempS * cosTempT;
 }
 
@@ -292,14 +247,13 @@ void GetRotationForCullingAI(int playerIndex, float angle, float *xSide1, float 
     float TempSside1 = (AllPlayers[playerIndex].Angle - 100) / 512.0 * M_TWOPI;
     float TempSside2 = (AllPlayers[playerIndex].Angle + 100) / 512.0 * M_TWOPI;
 
-    *xSide1 = -sin(TempSside1);
-    *zSide1 = -cos(TempSside1);
+    *xSide1 = -sinf(TempSside1);
+    *zSide1 = -cosf(TempSside1);
 
-    *xSide2 = -sin(TempSside2);
-    *zSide2 = -cos(TempSside2);
+    *xSide2 = -sinf(TempSside2);
+    *zSide2 = -cosf(TempSside2);
 }
 
-float Speed = 0.05;
 /**
  * @brief Normalize vector3
  *

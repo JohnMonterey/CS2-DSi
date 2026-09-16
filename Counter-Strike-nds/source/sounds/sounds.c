@@ -9,6 +9,60 @@
 #include <maxmod9.h>
 #include <fat.h>
 #include <filesystem.h>
+#include <unistd.h>  // access()/F_OK, no longer pulled in transitively
+
+// Recently started sound effects, released oldest-first. Fewer than the number of
+// hardware channels, so there is always one free to allocate.
+#define TrackedEffectCount 8
+static mm_sfxhand recentEffects[TrackedEffectCount];
+static int oldestEffect = 0;
+
+/**
+ * @brief Keep a sound effect's channel reserved for a while, then release it
+ *
+ * @param handle Handle returned by mmEffect, or 0 if the effect did not start
+ */
+static void trackEffect(mm_sfxhand handle)
+{
+    if (handle == 0)
+        return;
+    if (recentEffects[oldestEffect] != 0)
+        mmEffectRelease(recentEffects[oldestEffect]);
+    recentEffects[oldestEffect] = handle;
+    oldestEffect = (oldestEffect + 1) % TrackedEffectCount;
+}
+
+/**
+ * @brief Forget tracked handles, for when every effect has been cancelled
+ */
+static void forgetEffects()
+{
+    for (int i = 0; i < TrackedEffectCount; i++)
+        recentEffects[i] = 0;
+    oldestEffect = 0;
+}
+
+// maxmod resolves mmEffect(id) as mem_bank[mod_count + id], masks the word to 24 bits
+// and adds 0x02000000, with no bounds check of its own: a bad id makes the ARM7 play
+// arbitrary main RAM. There are no songs in this soundbank, so mod_count is 0 and the
+// id indexes the table directly.
+static mm_word *sampleBank = NULL;
+
+/**
+ * @brief Play a sample, refusing anything maxmod would turn into arbitrary memory
+ *
+ * @param sound Sample id
+ * @return Handle from maxmod, or 0 if nothing started
+ */
+static mm_sfxhand startEffect(mm_word sound)
+{
+    if (sound >= (mm_word)MSL_NSAMPS)
+        return 0;
+    if (sampleBank && sampleBank[sound] == 0)
+        return 0;
+
+    return mmEffect(sound);
+}
 
 // Music remaining time
 int musicLength = 0;
@@ -66,6 +120,7 @@ mm_word stream(mm_word length, mm_addr dest, mm_stream_formats format)
         {
             mmStreamClose();
             fclose(musicFile);
+            musicFile = NULL;
             length = 0;
         }
     }
@@ -111,9 +166,22 @@ void initSoundSystem()
 
     // memory bank, allocate BANKSIZE (or NSONGS+NSAMPS) words
     sys.mem_bank = malloc(MSL_BANKSIZE * 4);
+    sampleBank = (mm_word *)sys.mem_bank;
+
+    // This table MUST start zeroed. maxmod treats an entry whose top byte is non-zero as
+    // "this sample is already loaded", so leftover heap content makes mmLoadEffect skip
+    // the sample and leave the entry as a garbage 24-bit offset from 0x02000000 -- which
+    // the ARM7 then plays as if it were PCM. maxmod's own mmInitDefault calloc's this for
+    // exactly that reason; malloc only worked while the heap happened to still be fresh.
+    for (int i = 0; i < MSL_BANKSIZE; i++)
+        sampleBank[i] = 0;
 
     // select fifo channel
+#if _LIBNDS_MAJOR_ >= 2
+    sys.fifo_channel = 0; // Calico Maxmod uses PXI; this compatibility field is unused.
+#else
     sys.fifo_channel = FIFO_MAXMOD;
+#endif
 
     // initialize maxmod
     mmInit(&sys);
@@ -128,16 +196,19 @@ void initSoundSystem()
         musicFilePresent = false;
     }
 
-    if (access("fat:/soundbank.bin", F_OK) == 0 || access("soundbank.bin", F_OK) == 0 || access("sd:/soundbank.bin", F_OK) == 0)
+    // Hand maxmod the path that actually exists. The relative one resolves against the
+    // working directory, which is wherever the running .nds lives, so it is only right
+    // when the soundbank sits beside the build.
+    static const char *const soundBankPaths[] = {"fat:/soundbank.bin", "soundbank.bin", "sd:/soundbank.bin"};
+    soundBankLoaded = false;
+    for (unsigned i = 0; i < sizeof(soundBankPaths) / sizeof(soundBankPaths[0]); i++)
     {
-        // Load sound back
-        mmSoundBankInFiles("soundbank.bin");
-        soundBankLoaded = true;
-    }
-    else
-    {
-        // file doesn't exist
-        soundBankLoaded = false;
+        if (access(soundBankPaths[i], F_OK) == 0)
+        {
+            mmSoundBankInFiles(soundBankPaths[i]);
+            soundBankLoaded = true;
+            break;
+        }
     }
 }
 
@@ -165,6 +236,7 @@ void closeMusicSteam()
     {
         mmStreamClose();
         fclose(musicFile);
+        musicFile = NULL;
     }
 }
 
@@ -252,11 +324,17 @@ void unloadSounds()
 
     soundsLoaded = false;
 
+    // Stop everything still playing first. Unloading a sample out from under an active
+    // channel leaves it reading freed memory, which is heard as noise.
+    mmEffectCancelAll();
+    forgetEffects();
+
     // Unload sound effects
     for (int i = 0; i < MSL_NSAMPS; i++)
     {
         mmUnloadEffect(i);
     }
+
 }
 
 /**
@@ -277,17 +355,18 @@ void DoStepSound(int Volume, int Panning, int playerIndex)
 
         // Play random sound
         if (AllPlayers[playerIndex].Step == 0)
-            mysound = mmEffect(SFX_CONCRETE_CT_1);
+            mysound = startEffect(SFX_CONCRETE_CT_1);
         else if (AllPlayers[playerIndex].Step == 1)
-            mysound = mmEffect(SFX_CONCRETE_CT_2);
+            mysound = startEffect(SFX_CONCRETE_CT_2);
         else if (AllPlayers[playerIndex].Step == 2)
-            mysound = mmEffect(SFX_CONCRETE_CT_3);
+            mysound = startEffect(SFX_CONCRETE_CT_3);
         else
-            mysound = mmEffect(SFX_CONCRETE_CT_4);
+            mysound = startEffect(SFX_CONCRETE_CT_4);
 
         // Set panning and volume
         mmEffectPanning(mysound, Panning);
         mmEffectVolume(mysound, Volume);
+        trackEffect(mysound);
         AllPlayers[playerIndex].mapVisivilityTimer = 300;
 
         AllPlayers[playerIndex].Step++;
@@ -311,15 +390,18 @@ void GetPanning(int PlayerId, int *OutPanning, int *OutVolume, float xWithoutYFo
     // float MaxSoundDistance = 0.15; //0 = 0 meter; 0.05 = 7.65 meters; 1 = 255 meters
     float CenterOffset = 10;
     float Panning = -1;
+    // Callers pass uninitialised locals, and no match used to leave this untouched.
+    *OutVolume = 0;
 
-    // With players positions, calculate volume and panning
-    for (int i = 1; i < MaxPlayer; i++)
+    // With players positions, calculate volume and panning. Index 0 is the local player:
+    // sounds about them (being hit, dying) are at the camera, so at full volume.
+    for (int i = 0; i < MaxPlayer; i++)
         if (AllPlayers[i].Id == PlayerId)
         {
             if (CurrentCameraPlayer != 0 && CurrentCameraPlayer != i)
                 CalculatePlayerPosition(CurrentCameraPlayer);
             CalculatePlayerPosition(i);
-            float Dis = sqrtf(powf(AllPlayers[CurrentCameraPlayer].position.x - AllPlayers[i].position.x, 2.0) + powf(AllPlayers[CurrentCameraPlayer].position.y - AllPlayers[i].position.y, 2.0) + powf(AllPlayers[CurrentCameraPlayer].position.z - AllPlayers[i].position.z, 2.0));
+            float Dis = sqrtf(squareFloat(AllPlayers[CurrentCameraPlayer].position.x - AllPlayers[i].position.x) + squareFloat(AllPlayers[CurrentCameraPlayer].position.y - AllPlayers[i].position.y) + squareFloat(AllPlayers[CurrentCameraPlayer].position.z - AllPlayers[i].position.z));
             *OutVolume = (int)fmax(255 - (Dis * 2.0) / MaxSoundDistance, 0);
             Panning = (xWithoutYForAudio * (AllPlayers[i].position.x - AllPlayers[CurrentCameraPlayer].position.x)) + (zWithoutYForAudio * (AllPlayers[i].position.z - AllPlayers[CurrentCameraPlayer].position.z));
             break;
@@ -360,7 +442,7 @@ void GetPanningByPosition(int *OutPanning, int *OutVolume, Vector4 PositionB, fl
         CalculatePlayerPosition(CurrentCameraPlayer);
 
     // With players positions, calculate volume and panning
-    float Dis = sqrtf(powf(AllPlayers[CurrentCameraPlayer].position.x - PositionB.x, 2.0) + powf(AllPlayers[CurrentCameraPlayer].position.y - PositionB.y, 2.0) + powf(AllPlayers[CurrentCameraPlayer].position.z - PositionB.z, 2.0));
+    float Dis = sqrtf(squareFloat(AllPlayers[CurrentCameraPlayer].position.x - PositionB.x) + squareFloat(AllPlayers[CurrentCameraPlayer].position.y - PositionB.y) + squareFloat(AllPlayers[CurrentCameraPlayer].position.z - PositionB.z));
     *OutVolume = (int)fmax(255 - (Dis * 2.0) / MaxSoundDistance, 0);
     Panning = (xWithoutYForAudio * (PositionB.x - AllPlayers[CurrentCameraPlayer].position.x)) + (zWithoutYForAudio * (PositionB.z - AllPlayers[CurrentCameraPlayer].position.z));
 
@@ -394,11 +476,12 @@ void Play3DSound(mm_word sound, int Volume, int Panning, Player *player)
     // If the volume is 0, don't play the sound
     if (Volume > 0)
     {
-        mm_sfxhand mysound = mmEffect(sound);
+        mm_sfxhand mysound = startEffect(sound);
 
         // Set effect panning and volume
         mmEffectPanning(mysound, Panning);
         mmEffectVolume(mysound, Volume);
+        trackEffect(mysound);
     }
 
     // Show the player on the map if the sound is loud
@@ -420,10 +503,11 @@ void Play2DSound(mm_word sound, int Volume)
     // If the volume is 0, don't play the sound
     if (Volume > 0)
     {
-        mm_sfxhand mysound = mmEffect(sound);
+        mm_sfxhand mysound = startEffect(sound);
 
         // Set effeft volume
         mmEffectVolume(mysound, Volume);
+        trackEffect(mysound);
     }
 }
 
@@ -437,5 +521,13 @@ void PlayBasicSound(mm_word sound)
     if (!soundBankLoaded)
         return;
 
-    mmEffect(sound);
+    mm_sfxhand handle = startEffect(sound);
+    if (handle == 0)
+        return;
+
+    // Set the level explicitly. Every sound that is actually audible in this game does,
+    // and this is the only path that relied on maxmod's default.
+    mmEffectVolume(handle, 255);
+    mmEffectPanning(handle, 128);
+    trackEffect(handle);
 }

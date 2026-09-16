@@ -1,4 +1,12 @@
 /Counter-Strike-nds/build/
+/Counter-Strike-nds/build-dsidev/
 /Counter-Strike-nds/soundbank.bin
 *.nds
 *.elf
+
+# Host test binaries for the movement core
+/Counter-Strike-nds/tests/movement/.build/
+
+# UI test output. The reference images in tests/ui/refs/ ARE committed.
+/tests/ui/.out/
+__pycache__/

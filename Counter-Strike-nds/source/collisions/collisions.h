@@ -14,6 +14,7 @@ extern int LastStairs;
 void LoadAllCollisions(int mapToLoad); /**/
 void LoadAllStairs(int mapToLoad);     /**/
 void CalculatePlayerColBox(int PlayerId);
+void BuildRaycastWallMasks(int mapIndex);
 void CalculateTriggerColBox(float xPos, float zPos, float xSize, float zSize, int TriggerId);
 void CalculateShadowColBox(float xPos, float yPos, float zPos, float xSize, float ySize, float zSize, int collisionBoxIndex);
 void SetBombZone(float xPos, float zPos, float xSize, float zSize, int TriggerId, int waypoint, int nearWaypointCount, int nearWaypoint[nearWaypointCount]);
@@ -30,7 +31,14 @@ void CheckZones(CollisionBox2D bombDefuseZone, bool *CanPutBomb, bool *canDefuse
 void getValuesForRaycast(Vector3Int StartPosition, Vector3Int EndPosition, float *x, float *y, float *z);
 int checkBombZoneWaypoint();
 void checkPlayerOcclusionZone(int playerIndex);
-void CheckStairs(int *CanJump, bool *isInDownStairs);
+void CheckStairs(bool *isInDownStairs);
+/**
+ * @brief Is there headroom for the local player to stand up from a crouch?
+ *
+ * @param onGround true when the feet stay planted and the hull grows upward;
+ *                 false when the head stays put and it grows downward.
+ */
+bool CanPlayerStandUp(bool onGround);
 void CreateStairs(float xSideA, float xSideB, float zSideA, float zSideB, float startY, float endY, int direction, int index);
 void CreateWall(float xPos, float yPos, float zPos, float xSize, float ySize, float zSize, int Zone, int index);
 void SetPlayerForCollisions();

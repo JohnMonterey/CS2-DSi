@@ -20,7 +20,7 @@ typedef struct
 
 typedef struct
 {
-    int **matrixOneLength;
+    const unsigned char *matrixOneLength;
 } PathLength;
 
 #define BOTS_NAMES_COUNT 46
@@ -44,7 +44,6 @@ void CreateWaypoint(int id, float x, float y, float z, int edgeCount, int *edge)
 void CheckPathWaypoint(int playerIndex, int StartWaypoint, int FinalWaypoint);
 int GetDistanceBewteenTwoPlayers(int player1Index, int player2Index);
 int GetDistanceBewteenPlayerAndWaypoint(int playerIndex, int waypointIndex);
-void copyArrayToAllMatricesLength(int size, int matrix[size][size], int index);
 int getNearestWaypoint(float x, float y, float z);
 void ResetTakenBotsNames();
 void CheckShopForBot(int playerId);
@@ -53,7 +52,6 @@ void AiCheckForAction();
 void checkAiShoot();
 void SetDefuser(int defuserIndex);
 void SetRandomDefuser();
-void freeAllMatricesLength(int size);
 void freeWaypoint();
 
 void setBotAmount4();

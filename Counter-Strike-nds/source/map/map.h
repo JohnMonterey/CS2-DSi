@@ -43,6 +43,8 @@ typedef struct //
     float startPlayerAngleCounterTerrorists;
     int CollisionsCount;
     Wall *AllWallsCollisions;
+    // One wall-membership bitset per visibility zone; built at map load.
+    unsigned char *raycastWallMasks;
 
     int StairsCount;
     Stairs *AllStairs;
@@ -57,6 +59,7 @@ typedef struct //
     CollisionBox *AllShadowCollisionBox;
 
     MapModel *models;
+    int modelCount;
     void *image;
     // void *MapImage;
     int forcePartyMode;

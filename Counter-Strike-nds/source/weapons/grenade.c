@@ -155,7 +155,9 @@ void lanchGrenade(PhysicalGrenade *grenade, float xDirection, float yDirection, 
     grenade->Physic->zspeed = zDirection * 2200;
 
     grenade->Model->x = xPosition + xDirection * 4096;
-    grenade->Model->y = yPosition + 0.7 * 4096 + yDirection * 4096;
+    // Crouching lowers the eye, so it must lower the throw too -- everything
+    // else in the aiming path already goes through PlayerEyeOffset().
+    grenade->Model->y = yPosition + PlayerEyeOffsetF32(&AllPlayers[0]) + yDirection * 4096;
     grenade->Model->z = zPosition + zDirection * 4096;
 }
 
@@ -277,7 +279,7 @@ void UpdateGrenades()
                             continue;
 
                         // Get the distance between the grenade and the player
-                        float Distance = (float)sqrt(pow(player->PlayerModel->x - grenade->Model->x, 2.0) + pow(player->PlayerModel->y - grenade->Model->y, 2.0) + pow(player->PlayerModel->z - grenade->Model->z, 2.0)) / 8096.0;
+                        float Distance = (float)sqrt(squareDouble(player->PlayerModel->x - grenade->Model->x) + squareDouble(player->PlayerModel->y - grenade->Model->y) + squareDouble(player->PlayerModel->z - grenade->Model->z)) / 8096.0;
 
                         // Set a maximum distance
                         if (Distance > 4)
@@ -323,13 +325,13 @@ void UpdateGrenades()
                     // Check if the flash grenade is visible at screen (the code may be difficult to understand, but it works (but not very well ahah))
 
                     // Get the distance between the grenade and the player
-                    float distance3D = sqrtf(powf(player->PlayerModel->x - grenade->Model->x, 2.0) + powf(player->PlayerModel->y - grenade->Model->y, 2.0) + powf(player->PlayerModel->z - grenade->Model->z, 2.0)); // For vertical flash detection (Include player Y positon)
-                    float distance2D = sqrtf(powf(player->PlayerModel->x - grenade->Model->x, 2.0) + powf(player->PlayerModel->z - grenade->Model->z, 2.0));                                                         // For horizontal flash detection
+                    float distance3D = sqrtf(squareFloat(player->PlayerModel->x - grenade->Model->x) + squareFloat(player->PlayerModel->y - grenade->Model->y) + squareFloat(player->PlayerModel->z - grenade->Model->z)); // For vertical flash detection (Include player Y positon)
+                    float distance2D = sqrtf(squareFloat(player->PlayerModel->x - grenade->Model->x) + squareFloat(player->PlayerModel->z - grenade->Model->z));                                                         // For horizontal flash detection
 
                     // Get direction of grenade
                     Vector3 Direction;
                     Direction.x = grenade->Model->x - player->PlayerModel->x;
-                    Direction.y = grenade->Model->y - (player->PlayerModel->y + CameraOffsetY * 4096.0);
+                    Direction.y = grenade->Model->y - (player->PlayerModel->y + PlayerEyeOffsetF32(player));
                     Direction.z = grenade->Model->z - player->PlayerModel->z;
 
                     // Calculate angle direction (camera & player angles to have the grenade at the center of the screen)
@@ -415,7 +417,7 @@ void UpdateGrenades()
                         isAtScreenHorizontalSideA = true;
                         isAtScreenHorizontalSideB = true;
                     }
-                    Vector3Int playerCameraPos = {(int)player->PlayerModel->x, (int)player->PlayerModel->y + CameraOffsetYMultiplied, (int)player->PlayerModel->z};
+                    Vector3Int playerCameraPos = {(int)player->PlayerModel->x, (int)player->PlayerModel->y + PlayerEyeOffsetF32(player), (int)player->PlayerModel->z};
                     Vector3Int grenadeCameraPos = {(int)grenade->Model->x, (int)grenade->Model->y, (int)grenade->Model->z};
 
                     float x2 = 0, y2 = 0, z2 = 0;
