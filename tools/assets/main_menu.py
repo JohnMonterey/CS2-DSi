@@ -4,18 +4,21 @@ Everything on the main menu except the button labels is static, so each screen i
 into one 256x192 paletted texture: the wallpaper, the vignette, the logo, the button strips
 and the footer. The labels are drawn at runtime with the bitmap font (see dsfont.py).
 
-Texture VRAM in Dual 3D mode is banks A and B -- 256 KB for the whole game -- and about
-128 KB of it is free at the main menu, so the screens are 8bpp (49 KB each), not 16bpp
-(98 KB each). The palette is fitted in RGB555, the only precision the DS has, and the image
-is error-diffused against it there, so the 5-bit rounding is dithered along with the
-palette error instead of banding the vignette.
+Texture VRAM in Dual 3D mode is banks A and B -- 256 KB for the whole game. About 130 KB
+is free at boot but only about 74 KB after a match, which leaves the minimap and weapon
+images loaded. So each screen is 4bpp (24.6 KB, loaded as two 12.3 KB halves that fit
+between other allocations) and every 16x16 tile gets its own 16-colour palette; the
+palettes live in VRAM E, which has room. That comes within a few percent of one 256-colour
+palette. Palettes are fitted in RGB555, the only precision the DS has, and the image is
+error-diffused against them there, so the 5-bit rounding is dithered too.
 
 Usage:
     python3 tools/assets/main_menu.py                 # write the textures into data/
     python3 tools/assets/main_menu.py --preview out/  # also write the predicted DS frame
 
-Writes Counter-Strike-nds/data/menu_top.bin and menu_bottom.bin, each 256 little-endian
-RGB555 palette entries followed by 256x192 palette indices (49,664 bytes).
+Writes Counter-Strike-nds/data/menu_top.bin and menu_bottom.bin, each 192 tile palettes of
+16 little-endian RGB555 colours (row-major tiles), then 256x192 4bpp texels, low nibble
+first (30,720 bytes).
 
 The layout below must agree with MAIN_MENU_* in Counter-Strike-nds/source/graphics/ui.c.
 """
@@ -39,6 +42,7 @@ ART = os.path.join(GAME, "assets", "main_menu")
 DATA = os.path.join(GAME, "data")
 
 W, H = 256, 192
+TILE = 16                               # each tile has its own 16-colour palette
 LOGO_POS = (12, 12)                     # top screen
 BUTTON_Y = [33, 66, 99, 132]            # bottom screen, strip tops; strips are 26 px tall
 LABELS = ["Singleplayer", "Multiplayer", "Settings", "Quit"]
@@ -133,15 +137,16 @@ def nearest(pixels, palette):
     return out
 
 
-def dither(img5, palette):
-    """Serpentine Floyd-Steinberg against an exact RGB555 palette."""
+def dither(img5, palettes):
+    """Serpentine Floyd-Steinberg across the whole screen, each pixel choosing from its own
+    tile's exact RGB555 palette, so the dither pattern runs on across tile edges."""
     work = img5.copy()
-    pal = palette.astype(float)
     out = np.zeros((H, W), np.uint8)
     for y in range(H):
         xs = range(W) if y % 2 == 0 else range(W - 1, -1, -1)
         step = 1 if y % 2 == 0 else -1
         for x in xs:
+            pal = palettes[y // TILE][x // TILE]
             value = np.clip(work[y, x], 0, 31)
             k = int(((pal - value) ** 2).sum(axis=1).argmin())
             out[y, x] = k
@@ -159,14 +164,25 @@ def dither(img5, palette):
 
 def to_texture(img8):
     img5 = img8 * 31.0 / 255.0
-    palette = fit_palette(img5)
-    indices = dither(img5, palette)
-    full = np.zeros((256, 3), int)
-    full[:len(palette)] = palette
-    rgb555 = full[:, 0] | (full[:, 1] << 5) | (full[:, 2] << 10)
-    blob = rgb555.astype("<u2").tobytes() + indices.tobytes()
-    shown = full[indices] * 255.0 / 31.0          # what the DS puts on screen, in 8-bit
-    return blob, shown, len(palette)
+    rows, cols = H // TILE, W // TILE
+    palettes = [[None] * cols for _ in range(rows)]
+    table = np.zeros((rows * cols, 16, 3), int)
+    for ty in range(rows):
+        for tx in range(cols):
+            block = img5[ty * TILE:(ty + 1) * TILE, tx * TILE:(tx + 1) * TILE]
+            pal = fit_palette(block, 16, iterations=8)
+            palettes[ty][tx] = pal.astype(float)
+            table[ty * cols + tx, :len(pal)] = pal
+    indices = dither(img5, palettes)
+
+    rgb555 = table[..., 0] | (table[..., 1] << 5) | (table[..., 2] << 10)
+    flat = indices.reshape(-1)
+    packed = (flat[0::2] | (flat[1::2] << 4)).astype(np.uint8)   # low nibble first
+    blob = rgb555.astype("<u2").tobytes() + packed.tobytes()
+
+    tile_of = (np.arange(H)[:, None] // TILE) * cols + (np.arange(W)[None, :] // TILE)
+    shown = table[tile_of, indices] * 255.0 / 31.0   # what the DS puts on screen, in 8-bit
+    return blob, shown, rows * cols
 
 
 def main(argv=None):
@@ -183,7 +199,7 @@ def main(argv=None):
         with open(path, "wb") as fh:
             fh.write(blob)
         err = np.abs(shown - img).mean()
-        print("%s: %d colours, mean error %.2f/255 against the 8-bit composite"
+        print("%s: %d tiles, mean error %.2f/255 against the 8-bit composite"
               % (os.path.relpath(path, ROOT), used, err))
         screens[name] = shown
 

@@ -56,8 +56,19 @@ int currentSelectionMap = DUST2;
 #define MAIN_MENU_LABEL_COLOR RGB15(29, 28, 26) // #EDE9D6
 
 static const char *const mainMenuLabels[MAIN_MENU_BUTTON_COUNT] = {"Singleplayer", "Multiplayer", "Settings", "Quit"};
-static NE_Material *mainMenuScreens[2];  // top, bottom
-static NE_Palette *mainMenuPalettes[2];
+// A screen is 16x16 tiles, each with its own 16-colour palette, in two 256x96 textures.
+#define MENU_TILE 16
+#define MENU_HALF_HEIGHT 96
+#define MENU_TILE_COUNT ((256 / MENU_TILE) * (192 / MENU_TILE))
+
+typedef struct
+{
+    NE_Material *halves[2];
+    NE_Palette *palette;  // every tile's 16 colours, in tile order
+    uintptr_t paletteBase; // its VRAM address
+} MenuScreen;
+
+static MenuScreen mainMenuScreens[2]; // top, bottom
 static Font mainMenuFont;
 static bool mainMenuArtLoaded = false;
 
@@ -67,8 +78,10 @@ static inline int mainMenuButtonY(int index)
 }
 
 static void loadMainMenuArt();
-static bool loadScreenTexture(NE_Material **material, NE_Palette **palette, const u8 *data, u32 size);
-static void freeScreenTexture(NE_Material **material, NE_Palette **palette);
+static bool loadMenuScreen(MenuScreen *screen, const u8 *data, u32 size);
+static void freeMenuScreen(MenuScreen *screen);
+static bool menuScreenLoaded(const MenuScreen *screen);
+static void drawMenuScreen(const MenuScreen *screen, int z);
 static void quitGame(int unused);
 
 // Is showin the map in game
@@ -2146,8 +2159,9 @@ void initMainMenu()
 /**
  * @brief Load the main menu's screen textures and font
  *
- * About 108 KB of texture VRAM, held only while the main menu is open. If there is not
- * room, the menu still works: plain background, the engine's text, the 3D scene on top.
+ * About 59 KB of texture VRAM in blocks of at most 12.3 KB, held only while the main menu
+ * is open, so it fits after a match too. If it still does not, the menu keeps working:
+ * plain background, the engine's text, the 3D scene on top.
  */
 static void loadMainMenuArt()
 {
@@ -2155,11 +2169,11 @@ static void loadMainMenuArt()
         return;
     mainMenuArtLoaded = true;
 
-    if (!loadScreenTexture(&mainMenuScreens[0], &mainMenuPalettes[0], menu_top_bin, menu_top_bin_size) ||
-        !loadScreenTexture(&mainMenuScreens[1], &mainMenuPalettes[1], menu_bottom_bin, menu_bottom_bin_size))
+    if (!loadMenuScreen(&mainMenuScreens[0], menu_top_bin, menu_top_bin_size) ||
+        !loadMenuScreen(&mainMenuScreens[1], menu_bottom_bin, menu_bottom_bin_size))
     {
-        freeScreenTexture(&mainMenuScreens[0], &mainMenuPalettes[0]);
-        freeScreenTexture(&mainMenuScreens[1], &mainMenuPalettes[1]);
+        freeMenuScreen(&mainMenuScreens[0]);
+        freeMenuScreen(&mainMenuScreens[1]);
     }
     Font_Load(&mainMenuFont, font_cs20_bin, font_cs20_bin_size);
 }
@@ -2170,58 +2184,120 @@ static void loadMainMenuArt()
  */
 void unloadMainMenu()
 {
-    freeScreenTexture(&mainMenuScreens[0], &mainMenuPalettes[0]);
-    freeScreenTexture(&mainMenuScreens[1], &mainMenuPalettes[1]);
+    freeMenuScreen(&mainMenuScreens[0]);
+    freeMenuScreen(&mainMenuScreens[1]);
     Font_Unload(&mainMenuFont);
     mainMenuArtLoaded = false;
 }
 
 /**
- * @brief Upload a screen texture made by tools/assets/main_menu.py: 256 RGB555 palette
- * entries, then 256x192 palette indices
+ * @brief Upload a screen made by tools/assets/main_menu.py: 192 tile palettes of 16 RGB555
+ * colours, then 256x192 4bpp texels
+ *
+ * The texels go up as two 256x96 textures so neither needs a large free block. The tile
+ * palettes go up as one palette whose VRAM address is kept, so each tile can point the
+ * palette base at its own 16 colours.
  *
  * @return false, holding nothing, if the data is the wrong size or VRAM is full
  */
-static bool loadScreenTexture(NE_Material **material, NE_Palette **palette, const u8 *data, u32 size)
+static bool loadMenuScreen(MenuScreen *screen, const u8 *data, u32 size)
 {
-    *material = NULL;
-    *palette = NULL;
-    if (size != 256 * 2 + ScreenWidth * ScreenHeight)
+    const u32 paletteBytes = MENU_TILE_COUNT * 16 * 2;
+    const u32 halfBytes = ScreenWidth * MENU_HALF_HEIGHT / 2;
+
+    screen->halves[0] = screen->halves[1] = NULL;
+    screen->palette = NULL;
+    if (size != paletteBytes + 2 * halfBytes)
         return false;
 
-    *material = NE_MaterialCreate();
-    *palette = NE_PaletteCreate();
-    if (*material == NULL || *palette == NULL)
+    screen->palette = NE_PaletteCreate();
+    if (screen->palette == NULL)
+        return false;
+    if (!NE_PaletteLoad(screen->palette, (u16 *)data, MENU_TILE_COUNT * 16, GL_RGB16))
     {
-        freeScreenTexture(material, palette);
+        screen->palette->index = NE_NO_PALETTE;
+        freeMenuScreen(screen);
         return false;
     }
-    if (!NE_PaletteLoad(*palette, (u16 *)data, 256, GL_RGB256))
+    screen->paletteBase = (uintptr_t)NE_PaletteModificationStart(screen->palette);
+    NE_PaletteModificationEnd();
+
+    for (int h = 0; h < 2; h++)
     {
-        (*palette)->index = NE_NO_PALETTE;
-        freeScreenTexture(material, palette);
-        return false;
+        screen->halves[h] = NE_MaterialCreate();
+        if (screen->halves[h] == NULL)
+        {
+            freeMenuScreen(screen);
+            return false;
+        }
+        if (!NE_MaterialTexLoad(screen->halves[h], GL_RGB16, ScreenWidth, MENU_HALF_HEIGHT, 0,
+                                (void *)(data + paletteBytes + h * halfBytes)))
+        {
+            // A failed load can leave the material naming slot 0, which belongs to some
+            // other texture; deleting it as it stands would free that one.
+            screen->halves[h]->texindex = NE_NO_TEXTURE;
+            freeMenuScreen(screen);
+            return false;
+        }
     }
-    if (!NE_MaterialTexLoad(*material, GL_RGB256, ScreenWidth, ScreenHeight, 0, (void *)(data + 256 * 2)))
-    {
-        // A failed load can leave the material naming slot 0, which belongs to some other
-        // texture; deleting it as it stands would free that one.
-        (*material)->texindex = NE_NO_TEXTURE;
-        freeScreenTexture(material, palette);
-        return false;
-    }
-    NE_MaterialTexSetPal(*material, *palette);
     return true;
 }
 
-static void freeScreenTexture(NE_Material **material, NE_Palette **palette)
+static void freeMenuScreen(MenuScreen *screen)
 {
-    if (*material != NULL)
-        NE_MaterialDelete(*material);
-    if (*palette != NULL)
-        NE_PaletteDelete(*palette);
-    *material = NULL;
-    *palette = NULL;
+    for (int h = 0; h < 2; h++)
+    {
+        if (screen->halves[h] != NULL)
+            NE_MaterialDelete(screen->halves[h]);
+        screen->halves[h] = NULL;
+    }
+    if (screen->palette != NULL)
+        NE_PaletteDelete(screen->palette);
+    screen->palette = NULL;
+}
+
+static bool menuScreenLoaded(const MenuScreen *screen)
+{
+    return screen->halves[1] != NULL;
+}
+
+/**
+ * @brief Draw a screen as one quad per tile, each with its own palette. 192 quads.
+ * Call inside Init2DViewPixelExact().
+ */
+static void drawMenuScreen(const MenuScreen *screen, int z)
+{
+    int tilesPerRow = ScreenWidth / MENU_TILE;
+    for (int h = 0; h < 2; h++)
+    {
+        NE_MaterialUse(screen->halves[h]);
+        GFX_COLOR = RGB15(31, 31, 31);
+        for (int ty = 0; ty < MENU_HALF_HEIGHT / MENU_TILE; ty++)
+        {
+            int row = (h * MENU_HALF_HEIGHT) / MENU_TILE + ty;
+            for (int tx = 0; tx < tilesPerRow; tx++)
+            {
+                // The palette base register counts in 16-byte steps for 16-colour palettes.
+                GFX_PAL_FORMAT = (screen->paletteBase + (row * tilesPerRow + tx) * 32) >> 4;
+
+                int u1 = tx * MENU_TILE, u2 = u1 + MENU_TILE;
+                int v1 = ty * MENU_TILE, v2 = v1 + MENU_TILE;
+                int x1 = u1, x2 = u2;
+                int y1 = row * MENU_TILE, y2 = y1 + MENU_TILE;
+
+                GFX_BEGIN = GL_QUADS;
+                GFX_TEX_COORD = TEXTURE_PACK(inttot16(u1), inttot16(v1));
+                GFX_VERTEX16 = (y1 << 16) | (x1 & 0xFFFF);
+                GFX_VERTEX16 = z;
+                GFX_TEX_COORD = TEXTURE_PACK(inttot16(u1), inttot16(v2));
+                GFX_VERTEX_XY = (y2 << 16) | (x1 & 0xFFFF);
+                GFX_TEX_COORD = TEXTURE_PACK(inttot16(u2), inttot16(v2));
+                GFX_VERTEX_XY = (y2 << 16) | (x2 & 0xFFFF);
+                GFX_TEX_COORD = TEXTURE_PACK(inttot16(u2), inttot16(v1));
+                GFX_VERTEX_XY = (y1 << 16) | (x2 & 0xFFFF);
+            }
+        }
+    }
 }
 
 /**
@@ -2231,11 +2307,11 @@ static void freeScreenTexture(NE_Material **material, NE_Palette **palette)
  */
 bool drawMainMenuTopScreen()
 {
-    if (currentMenu != MAIN || mainMenuScreens[0] == NULL)
+    if (currentMenu != MAIN || !menuScreenLoaded(&mainMenuScreens[0]))
         return false;
 
     Init2DViewPixelExact();
-    NE_2DDrawTexturedQuad(0, 0, ScreenWidth, ScreenHeight, 0, mainMenuScreens[0]);
+    drawMenuScreen(&mainMenuScreens[0], 0);
     return true;
 }
 
@@ -3264,8 +3340,8 @@ void drawMainMenu()
 {
     Init2DViewPixelExact();
 
-    if (mainMenuScreens[1] != NULL)
-        NE_2DDrawTexturedQuad(0, 0, ScreenWidth, ScreenHeight, 20, mainMenuScreens[1]);
+    if (menuScreenLoaded(&mainMenuScreens[1]))
+        drawMenuScreen(&mainMenuScreens[1], 20);
     else
         NE_2DDrawQuad(0, 0, ScreenWidth, ScreenHeightFixed, 20, RGB15(3, 3, 3));
 
