@@ -437,11 +437,58 @@ void DrawPlayers()
 }
 
 /**
+ * @brief NE_2DViewInit, but with every screen row where it belongs
+ *
+ * NE_2DViewInit builds its projection with glOrthof32, whose fixed-point division truncates
+ * 2/192 to 42/4096 where it should be 42.67/4096. Every 2D y coordinate is drawn at 63/64
+ * of its value: a quad to y=192 stops at row 189, and a 192-row texture loses three rows.
+ * The existing menus were laid out around that (hence ScreenHeightFixed), so this is a
+ * separate view for artwork that has to land on exact pixels.
+ *
+ * The DS truncates when it maps clip space to screen rows, so y's factor is rounded away
+ * from zero: every integer coordinate then lands just past its row boundary, never short.
+ * z keeps NE_2DViewInit's meaning, so priorities work the same in both views.
+ */
+void Init2DViewPixelExact(void)
+{
+    NE_2DViewInit();
+
+    MATRIX_CONTROL = GL_PROJECTION;
+    MATRIX_LOAD4x4 = 131072; // x: 0..256 -> -1..1; 2/256 * 4096 * 4096, exact
+    MATRIX_LOAD4x4 = 0;
+    MATRIX_LOAD4x4 = 0;
+    MATRIX_LOAD4x4 = 0;
+
+    MATRIX_LOAD4x4 = 0;
+    MATRIX_LOAD4x4 = -174763; // y: 0..192 -> 1..-1; 2/192 * 4096 * 4096 = 174762.67
+    MATRIX_LOAD4x4 = 0;
+    MATRIX_LOAD4x4 = 0;
+
+    MATRIX_LOAD4x4 = 0;
+    MATRIX_LOAD4x4 = 0;
+    MATRIX_LOAD4x4 = inttof32(1);
+    MATRIX_LOAD4x4 = 0;
+
+    MATRIX_LOAD4x4 = inttof32(-1);
+    MATRIX_LOAD4x4 = inttof32(1);
+    MATRIX_LOAD4x4 = 0;
+    MATRIX_LOAD4x4 = inttof32(1);
+
+    // Vertices go straight to the projection: no modelview scale.
+    MATRIX_CONTROL = GL_MODELVIEW;
+    MATRIX_IDENTITY = 0;
+}
+
+/**
  * @brief Draw game top screen when a game is not launched
  *
  */
 void Draw3DSceneNotInGame(void)
 {
+    // The main menu's artwork covers the whole top screen: skip the 3D scene under it.
+    if (drawMainMenuTopScreen())
+        return;
+
     // Set camera for drawing
     NE_CameraUse(Camera);
 

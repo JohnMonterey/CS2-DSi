@@ -226,5 +226,8 @@ void unloadSelectionMapImageMenu();
 void unloadChangeNameMenu();
 void unloadEnterCodeMenu();
 void unloadControlsChangeMenu();
+void unloadMainMenu();
+
+bool drawMainMenuTopScreen();
 
 #endif // UI_H_

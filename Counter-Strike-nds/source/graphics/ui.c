@@ -25,6 +25,10 @@
 #include "draw3d.h"
 #include "stats.h"
 #include "debug.h"
+#include "font.h"
+#include "font_cs20_bin.h"
+#include "menu_top_bin.h"
+#include "menu_bottom_bin.h"
 
 enum shopCategory ShopCategory = PISTOLS; // 0 pistols, 1 Heavy, 2 sgm, 3 rifles, 4 equipment, 5 grenades
 
@@ -41,6 +45,32 @@ int currentSelectionMap = DUST2;
 // pointers in them: freeing without having created would delete the shop's a second time.
 #define SHOW_MAP_SELECTION_IMAGE 0
 
+// Main menu. Each screen is one texture made by tools/assets/main_menu.py from
+// Counter-Strike-nds/assets/main_menu, with the button strips already in it; only the
+// labels are drawn here. The positions must agree with that script's.
+#define MAIN_MENU_BUTTON_COUNT 4
+#define MAIN_MENU_FIRST_BUTTON_Y 33
+#define MAIN_MENU_BUTTON_SPACING 33
+#define MAIN_MENU_BUTTON_HEIGHT 26
+#define MAIN_MENU_LABEL_X 8 // the label's line box shares its strip's top edge
+#define MAIN_MENU_LABEL_COLOR RGB15(29, 28, 26) // #EDE9D6
+
+static const char *const mainMenuLabels[MAIN_MENU_BUTTON_COUNT] = {"Singleplayer", "Multiplayer", "Settings", "Quit"};
+static NE_Material *mainMenuScreens[2];  // top, bottom
+static NE_Palette *mainMenuPalettes[2];
+static Font mainMenuFont;
+static bool mainMenuArtLoaded = false;
+
+static inline int mainMenuButtonY(int index)
+{
+    return MAIN_MENU_FIRST_BUTTON_Y + index * MAIN_MENU_BUTTON_SPACING;
+}
+
+static void loadMainMenuArt();
+static bool loadScreenTexture(NE_Material **material, NE_Palette **palette, const u8 *data, u32 size);
+static void freeScreenTexture(NE_Material **material, NE_Palette **palette);
+static void quitGame(int unused);
+
 // Is showin the map in game
 bool isShowingMap = false;
 // Is showing the keyboard
@@ -56,6 +86,9 @@ void (*onCloseMenu)();
 void (*lastOpenedMenu)();
 // Have to call the onCloseMenu function?
 bool haveToCallOnCloseMenu = false;
+// Does the menu paint the whole bottom screen, buttons included? Its buttons still take
+// touches. Set in a menu's init; startChangeMenu() clears it for the next menu.
+static bool menuDrawsOwnScreen = false;
 // Is the menu using the quit button?
 bool useQuitButton = false;
 // Number of checkbox in the menu to render
@@ -318,6 +351,7 @@ void startChangeMenu(enum UiMenu menuToShow)
     {
         AllButtons[i].isHidden = false;
     }
+    menuDrawsOwnScreen = false;
 
     // Set current menu
     currentMenu = menuToShow;
@@ -1540,13 +1574,15 @@ void drawBottomScreenUI()
         NE_SpriteDraw(BottomScreenSprites[0]);
 
         // Draw menu background
-        NE_2DDrawQuad(0, 0, 256, 196, 20, RGB15(3, 3, 3));
+        if (!menuDrawsOwnScreen)
+            NE_2DDrawQuad(0, 0, 256, 196, 20, RGB15(3, 3, 3));
 
         // Draw the menu
         renderFunction();
 
         // Draw menu elements
-        drawButtons();
+        if (!menuDrawsOwnScreen)
+            drawButtons();
         drawCheckboxs();
         drawSliders();
     }
@@ -2078,50 +2114,151 @@ void initMainMenu()
         actionOfUiTimer = SAVE;
     }
 
-    // Single player button
-    AllButtons[0].xPos = 40;
-    AllButtons[0].yPos = 40;
-    AllButtons[0].xSize = ScreenWidth - 80;
-    AllButtons[0].ySize = 24;
-    AllButtons[0].OnClick = &initSelectionMapImageMenu;
-    AllButtons[0].parameter = 0;
-    AllButtons[0].xTextPos = 10;
-    AllButtons[0].yTextPos = 6;
-    AllButtons[0].text = "Single Player";
+    onCloseMenu = &unloadMainMenu;
+    haveToCallOnCloseMenu = true;
+    loadMainMenuArt();
+    menuDrawsOwnScreen = true;
 
-    // Multiplayer button
-    AllButtons[1].xPos = 40;
-    AllButtons[1].yPos = 87;
-    AllButtons[1].xSize = ScreenWidth - 80;
-    AllButtons[1].ySize = 24;
-    AllButtons[1].OnClick = &initJoinCreatePartyMenu;
-    AllButtons[1].isHidden = false;
-    AllButtons[1].xTextPos = 11;
-    AllButtons[1].yTextPos = 12;
-    AllButtons[1].text = "Multiplayer";
-
-    // Settings button
-    AllButtons[2].xPos = 40;
-    AllButtons[2].yPos = 135;
-    AllButtons[2].xSize = ScreenWidth - 80;
-    AllButtons[2].ySize = 24;
-    AllButtons[2].OnClick = &initSettingsMenu;
-    AllButtons[2].xTextPos = 12;
-    AllButtons[2].yTextPos = 18;
-    AllButtons[2].text = "Settings";
-
-    AllButtons[3].xPos = 76;
-    AllButtons[3].yPos = 170;
-    AllButtons[3].xSize = ScreenWidth - 160;
-    AllButtons[3].ySize = 20;
-    AllButtons[3].OnClick = &initStatsMenu;
-    AllButtons[3].xTextPos = 13;
-    AllButtons[3].yTextPos = 22;
-    AllButtons[3].text = "Stats";
+    // Each button is a full-width strip. The touch areas reach 3 px past the strips so
+    // together they cover the gaps between them.
+    static void (*const actions[MAIN_MENU_BUTTON_COUNT])(int) = {
+        &initSelectionMapImageMenu,
+        &initJoinCreatePartyMenu,
+        &initSettingsMenu,
+        &quitGame,
+    };
+    for (int i = 0; i < MAIN_MENU_BUTTON_COUNT; i++)
+    {
+        AllButtons[i].xPos = 0;
+        AllButtons[i].yPos = mainMenuButtonY(i) - 3;
+        AllButtons[i].xSize = ScreenWidth - 1;
+        AllButtons[i].ySize = MAIN_MENU_BUTTON_HEIGHT + 6 - 1;
+        AllButtons[i].OnClick = actions[i];
+        AllButtons[i].parameter = 0;
+        AllButtons[i].text = mainMenuLabels[i];
+    }
 
     launchMusic();
 
-    SetButtonToShow(4);
+    SetButtonToShow(MAIN_MENU_BUTTON_COUNT);
+}
+
+/**
+ * @brief Load the main menu's screen textures and font
+ *
+ * About 108 KB of texture VRAM, held only while the main menu is open. If there is not
+ * room, the menu still works: plain background, the engine's text, the 3D scene on top.
+ */
+static void loadMainMenuArt()
+{
+    if (mainMenuArtLoaded)
+        return;
+    mainMenuArtLoaded = true;
+
+    if (!loadScreenTexture(&mainMenuScreens[0], &mainMenuPalettes[0], menu_top_bin, menu_top_bin_size) ||
+        !loadScreenTexture(&mainMenuScreens[1], &mainMenuPalettes[1], menu_bottom_bin, menu_bottom_bin_size))
+    {
+        freeScreenTexture(&mainMenuScreens[0], &mainMenuPalettes[0]);
+        freeScreenTexture(&mainMenuScreens[1], &mainMenuPalettes[1]);
+    }
+    Font_Load(&mainMenuFont, font_cs20_bin, font_cs20_bin_size);
+}
+
+/**
+ * @brief Unload the main menu
+ *
+ */
+void unloadMainMenu()
+{
+    freeScreenTexture(&mainMenuScreens[0], &mainMenuPalettes[0]);
+    freeScreenTexture(&mainMenuScreens[1], &mainMenuPalettes[1]);
+    Font_Unload(&mainMenuFont);
+    mainMenuArtLoaded = false;
+}
+
+/**
+ * @brief Upload a screen texture made by tools/assets/main_menu.py: 256 RGB555 palette
+ * entries, then 256x192 palette indices
+ *
+ * @return false, holding nothing, if the data is the wrong size or VRAM is full
+ */
+static bool loadScreenTexture(NE_Material **material, NE_Palette **palette, const u8 *data, u32 size)
+{
+    *material = NULL;
+    *palette = NULL;
+    if (size != 256 * 2 + ScreenWidth * ScreenHeight)
+        return false;
+
+    *material = NE_MaterialCreate();
+    *palette = NE_PaletteCreate();
+    if (*material == NULL || *palette == NULL)
+    {
+        freeScreenTexture(material, palette);
+        return false;
+    }
+    if (!NE_PaletteLoad(*palette, (u16 *)data, 256, GL_RGB256))
+    {
+        (*palette)->index = NE_NO_PALETTE;
+        freeScreenTexture(material, palette);
+        return false;
+    }
+    if (!NE_MaterialTexLoad(*material, GL_RGB256, ScreenWidth, ScreenHeight, 0, (void *)(data + 256 * 2)))
+    {
+        // A failed load can leave the material naming slot 0, which belongs to some other
+        // texture; deleting it as it stands would free that one.
+        (*material)->texindex = NE_NO_TEXTURE;
+        freeScreenTexture(material, palette);
+        return false;
+    }
+    NE_MaterialTexSetPal(*material, *palette);
+    return true;
+}
+
+static void freeScreenTexture(NE_Material **material, NE_Palette **palette)
+{
+    if (*material != NULL)
+        NE_MaterialDelete(*material);
+    if (*palette != NULL)
+        NE_PaletteDelete(*palette);
+    *material = NULL;
+    *palette = NULL;
+}
+
+/**
+ * @brief Draw the main menu's top screen in place of the 3D scene
+ *
+ * @return false when the main menu is not open or its artwork is not loaded
+ */
+bool drawMainMenuTopScreen()
+{
+    if (currentMenu != MAIN || mainMenuScreens[0] == NULL)
+        return false;
+
+    Init2DViewPixelExact();
+    NE_2DDrawTexturedQuad(0, 0, ScreenWidth, ScreenHeight, 0, mainMenuScreens[0]);
+    return true;
+}
+
+/**
+ * @brief Leave the game for the loader that started it (TWiLight Menu++, hbmenu, the
+ * development loader), or power off when there is none
+ *
+ */
+static void quitGame(int unused)
+{
+#ifdef DSIDEV_ENABLED
+    // The development runtime owns this exit: on its next poll it releases the radio and
+    // returns to the loader, and a build that inherits a live association cannot bring
+    // dswifi up again.
+    pmPrepareToReset();
+#else
+    if (my_socket != 0)
+    {
+        Wifi_DisconnectAP();
+        wlmgrStop();
+    }
+    exit(0);
+#endif
 }
 
 /**
@@ -3125,22 +3262,23 @@ void drawControllerMenu()
  */
 void drawMainMenu()
 {
+    Init2DViewPixelExact();
 
-    // Print texts
-    NE_TextPrint(0,        // Font slot
-                 10, 1,    // Coordinates x(column), y(row)
-                 NE_White, // Color
-                 GAME_NAME);
+    if (mainMenuScreens[1] != NULL)
+        NE_2DDrawTexturedQuad(0, 0, ScreenWidth, ScreenHeight, 20, mainMenuScreens[1]);
+    else
+        NE_2DDrawQuad(0, 0, ScreenWidth, ScreenHeightFixed, 20, RGB15(3, 3, 3));
 
-    NE_TextPrint(0,        // Font slot
-                 1, 22,    // Coordinates x(column), y(row)
-                 NE_White, // Color
-                 GAME_VERSION);
+    for (int i = 0; i < MAIN_MENU_BUTTON_COUNT; i++)
+    {
+        if (Font_IsLoaded(&mainMenuFont))
+            Font_Draw(&mainMenuFont, MAIN_MENU_LABEL_X, mainMenuButtonY(i), 0, MAIN_MENU_LABEL_COLOR, mainMenuLabels[i]);
+        else
+            NE_TextPrint(0, 1, (mainMenuButtonY(i) + 9) / 8, MAIN_MENU_LABEL_COLOR, mainMenuLabels[i]);
+    }
 
-    NE_TextPrint(0,        // Font slot
-                 24, 22,   // Coordinates x(column), y(row)
-                 NE_White, // Color
-                 DEV_NAME);
+    // Whatever drawBottomScreenUI draws next was laid out for the engine's own view.
+    NE_2DViewInit();
 }
 
 /**

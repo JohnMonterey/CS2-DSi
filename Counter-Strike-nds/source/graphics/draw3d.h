@@ -13,6 +13,7 @@ void DrawPlayers();
 void Draw3DSceneNotInGame(void);
 void createPlayerShadow();
 void SetTwoScreenMode(bool value);
+void Init2DViewPixelExact(void);
 
 extern NE_Palette *Palettes[19];
 extern NE_Material *TopScreenSpritesMaterials[6];

@@ -35,6 +35,8 @@ APP_CANDIDATES = [
 ]
 
 CONFIG_CANDIDATES = [
+    # Where current melonDS builds write it on macOS (Qt's preferences directory).
+    "~/Library/Preferences/melonDS/melonDS.toml",
     "~/Library/Application Support/melonDS/melonDS.toml",
     "~/.config/melonDS/melonDS.toml",
     "~/Library/Application Support/melonDS/melonDS.ini",
@@ -169,13 +171,20 @@ DEFAULT_KEYMAP = {
 }
 
 
+def _binding(config: dict, name: str):
+    # melonDS 1.x keeps bindings per instance ([Instance0.Keyboard]); older builds used a
+    # top-level [Keyboard] table.
+    raw = config.get("Instance0.Keyboard.%s" % name)
+    return raw if raw is not None else config.get("Keyboard.%s" % name)
+
+
 def keymap(config: dict = None) -> dict:
     """{"A": "x", ...} -- DS button to a key name understood by mac.key_down."""
     config = read_config() if config is None else config
     out = {}
     missing = []
     for button in DS_BUTTONS:
-        raw = config.get("Keyboard.%s" % button)
+        raw = _binding(config, button)
         name = mac.qt_key_to_name(raw) if isinstance(raw, int) else None
         if name is None:
             name = DEFAULT_KEYMAP.get(button)
@@ -188,7 +197,7 @@ def keymap(config: dict = None) -> dict:
 def hotkey(name: str, config: dict = None):
     """A melonDS hotkey (e.g. "HK_Pause", "HK_FrameStep") as a mac key name, or None."""
     config = read_config() if config is None else config
-    raw = config.get("Keyboard.%s" % name)
+    raw = _binding(config, name)
     return mac.qt_key_to_name(raw) if isinstance(raw, int) else None
 
 
