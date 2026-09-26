@@ -201,6 +201,9 @@ static void testRigFile(void)
     for (int b = RIG_THIGH_L; b <= RIG_SHIN_R; b++)
         CHECK(g_rig.bones[b].length > ANIM_ONE / 4 && g_rig.bones[b].length < ANIM_ONE,
               "leg bone %d is a plausible length (%d)", b, g_rig.bones[b].length);
+    // Each foot's contact with the ground is found from its shin's own vertices.
+    CHECK(g_rig.feet[0].count >= 4 && g_rig.feet[1].count >= 4, "both shins' outlines were collected (%d and %d points)",
+          g_rig.feet[0].count, g_rig.feet[1].count);
     CHECK(g_rig.displayListWords > 1000 && g_rigSize == LIST_OFFSET + 4 * g_rig.displayListWords,
           "the display list is the rest of the file (%u bytes, list of %u words)", g_rigSize, g_rig.displayListWords);
     CHECK(listWords(g_rigData)[1] == 0x21221440u,
@@ -249,13 +252,98 @@ static void walk(CharacterAnimState *st, CharacterAnimInput *in, int32_t speed, 
     }
 }
 
-static double foot(const RigPose *pose, int thighBone)
+/* The drawn mesh, skinned the way character_anim.c sets up the geometry engine: the pose's
+ * offset, then each bone's matrix is its parent's turned about the bone's pivot (roll, then
+ * pitch, then yaw, as glRotate*i builds them), and every vertex in the display list is sent
+ * after its bone's matrix is restored. Independent of the pose code's own reasoning about
+ * the legs, so it can catch that reasoning being wrong. */
+typedef struct
 {
-    // Height of the ankle below the hip for this pose, as the pose code reasons about it.
-    int32_t thigh = g_rig.bones[thighBone].restPitch + pose->bones[thighBone].pitch;
-    int32_t shin = g_rig.bones[thighBone + 1].restPitch + pose->bones[thighBone].pitch + pose->bones[thighBone + 1].pitch;
-    return (g_rig.bones[thighBone].length * cos(thigh * TURN_RAD / ANIM_TURN) +
-            g_rig.bones[thighBone + 1].length * cos(shin * TURN_RAD / ANIM_TURN)) / ANIM_ONE;
+    double m[3][4];
+} Affine;
+
+static Affine affMul(const Affine *a, const Affine *b)
+{
+    Affine r;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 4; j++)
+        {
+            r.m[i][j] = a->m[i][0] * b->m[0][j] + a->m[i][1] * b->m[1][j] + a->m[i][2] * b->m[2][j];
+            if (j == 3)
+                r.m[i][j] += a->m[i][3];
+        }
+    return r;
+}
+
+static Affine affTranslate(double x, double y, double z)
+{
+    Affine r = {{{1, 0, 0, x}, {0, 1, 0, y}, {0, 0, 1, z}}};
+    return r;
+}
+
+static Affine affRotate(int axis, int32_t angle)
+{
+    double c = cos(angle * TURN_RAD / ANIM_TURN), s = sin(angle * TURN_RAD / ANIM_TURN);
+    Affine r = {{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}}};
+    int a = (axis + 1) % 3, b = (axis + 2) % 3; // x: (y, z); y: (z, x); z: (x, y)
+    r.m[a][a] = c;
+    r.m[a][b] = -s;
+    r.m[b][a] = s;
+    r.m[b][b] = c;
+    return r;
+}
+
+// The lowest point of the drawn mesh for this pose, model units.
+static double lowestVertex(const RigPose *pose)
+{
+    Affine bones[RIG_BONE_COUNT];
+    for (int b = 0; b < RIG_BONE_COUNT; b++)
+    {
+        const RigBoneInfo *info = &g_rig.bones[b];
+        const RigBonePose *p = &pose->bones[b];
+        double px = info->pivot[0] / 4096.0, py = info->pivot[1] / 4096.0, pz = info->pivot[2] / 4096.0;
+        Affine m = b == 0 ? affTranslate(pose->offset[0] / 4096.0, pose->offset[1] / 4096.0, pose->offset[2] / 4096.0)
+                          : bones[info->parent];
+        Affine t = affTranslate(px, py, pz), r;
+        m = affMul(&m, &t);
+        r = affRotate(1, p->yaw);
+        m = affMul(&m, &r);
+        r = affRotate(0, p->pitch);
+        m = affMul(&m, &r);
+        r = affRotate(2, p->roll);
+        m = affMul(&m, &r);
+        t = affTranslate(-px, -py, -pz);
+        bones[b] = affMul(&m, &t);
+    }
+
+    const uint32_t *list = g_rig.displayList;
+    double lowest = 1e9;
+    int bone = -1;
+    uint32_t i = 1;
+    while (i < g_rig.displayListWords)
+    {
+        uint32_t packed = list[i++];
+        for (int k = 0; k < 4; k++)
+        {
+            uint32_t cmd = (packed >> (8 * k)) & 0xFF;
+            if (cmd == 0x14) // MTX_RESTORE
+                for (int b = 0; b < RIG_BONE_COUNT; b++)
+                    if (g_rig.bones[b].slot == list[i] - RIG_FIRST_SLOT)
+                        bone = b;
+            if (cmd == 0x23 && bone >= 0) // VTX_16
+            {
+                double x = (int16_t)(list[i] & 0xFFFF) / 4096.0, y = (int16_t)(list[i] >> 16) / 4096.0,
+                       z = (int16_t)(list[i + 1] & 0xFFFF) / 4096.0;
+                const double *row = bones[bone].m[1];
+                double wy = row[0] * x + row[1] * y + row[2] * z + row[3];
+                if (wy < lowest)
+                    lowest = wy;
+            }
+            // Parameter counts of the commands the rig uses (checked by the parse tests).
+            i += cmd == 0x23 ? 2 : (cmd == 0x00 || cmd == 0x41 ? 0 : 1);
+        }
+    }
+    return lowest;
 }
 
 static void testGait(void)
@@ -399,16 +487,17 @@ static void testPoses(void)
     CharacterAnim_Reset(&st, &in, 4);
     RigPose pose, prev;
 
-    // Standing: legs near vertical, the body's height barely moves from the mesh's.
-    // The body is raised by pose.offset[1]; a foot touches the ground when its reach below
-    // the hip, less that offset, equals the mesh's own reach.
+    // The ground is where the mesh's soles are: the lowest point of the posed mesh belongs
+    // there. The mesh stands mid-stride, so straightening the legs to stand raises the hips a
+    // little.
     CharacterAnim_Pose(&st, &g_rig, &pose);
     RigPose rest;
     memset(&rest, 0, sizeof(rest));
-    double restFoot = fmax(foot(&rest, RIG_THIGH_L), foot(&rest, RIG_THIGH_R));
-    CHECK_NEAR(pose.offset[1] / 4096.0, 0.0, 0.1, "standing height offset (model units)");
-    CHECK_NEAR(fmax(foot(&pose, RIG_THIGH_L), foot(&pose, RIG_THIGH_R)) - pose.offset[1] / 4096.0, restFoot, 0.01,
-               "standing: the lower foot is on the ground");
+    double ground = lowestVertex(&rest);
+    CHECK(ground < -1.4 && ground > -1.5, "the mesh's soles are at %.3f", ground);
+    CHECK(pose.offset[1] > 0 && pose.offset[1] < ANIM_ONE / 5, "standing raises the hips a little (%.3f model units)",
+          pose.offset[1] / 4096.0);
+    CHECK_NEAR(lowestVertex(&pose), ground, 0.005, "standing: the lower foot is on the ground");
 
     // Walking and running, cycle after cycle, speeding up and slowing down: the lower foot always
     // touches the ground, and nothing pops. Fast legs move a lot per frame, so a pop is
@@ -444,8 +533,7 @@ static void testPoses(void)
         if (jump > worstJump)
             worstJump = jump;
         older = prev;
-        double lower = fmax(foot(&pose, RIG_THIGH_L), foot(&pose, RIG_THIGH_R));
-        double err = fabs(lower - pose.offset[1] / 4096.0 - restFoot);
+        double err = fabs(lowestVertex(&pose) - ground);
         if (err > worstGround)
             worstGround = err;
         prev = pose;
@@ -453,7 +541,7 @@ static void testPoses(void)
     CHECK(worstStep < ANIM_DEG(25), "no bone moves more than 25 degrees in a frame (worst %.2f)", toDegrees(worstStep));
     CHECK(worstJump < ANIM_DEG(8), "no bone's motion changes by more than 8 degrees a frame (worst %.2f)",
           toDegrees(worstJump));
-    CHECK(worstGround < 0.03, "the planted foot stays on the ground (worst %.3f model units)", worstGround);
+    CHECK(worstGround < 0.005, "the planted foot stays on the ground (worst %.3f model units)", worstGround);
 
     // The mirror half of the cycle mirrors the legs.
     CharacterAnimState run;

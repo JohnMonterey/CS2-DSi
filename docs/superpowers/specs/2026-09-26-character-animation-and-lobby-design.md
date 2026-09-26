@@ -73,8 +73,11 @@ facing, look angle, weapon recoil, dead or alive — into a pose each frame:
 - **Hips turn toward the direction of travel** (±50°) while the chest keeps the aim;
   moving more than 110° from the facing runs the stride backwards, with a 90–110° band so
   a wavering diagonal does not flip it every frame.
-- **The planted foot stays down.** The body is lowered by however much the lower leg's
-  reach has shortened.
+- **The planted foot stays down.** Each foot's contact with the ground comes from its
+  shin's own vertices, collected when the rig is parsed. The pose turns them with the thigh,
+  the shin and the hips' sway, and raises or lowers the body so the lowest one sits where
+  the mesh's soles are. The mesh stands mid-stride, so standing up straight lifts the hips a
+  little.
 - **Facing is smoothed** along the short way round, so a bot that snaps 180° turns over a
   few frames.
 - **Idle:** breathing, a slow weight shift and glances, offset per character.
@@ -143,10 +146,12 @@ resets) are noticed because they move the destination without a snapshot, and sn
 
 ## Testing
 
-- `make test-anim` (123 checks): fixed-point trig against libm; the shipped rig parses and
+- `make test-anim` (129 checks): fixed-point trig against libm; the shipped rig parses and
   damaged copies are refused; the stride follows distance; backpedal and its hysteresis;
   the same motion at 30 and 60 Hz ends in the same state; turning takes the short way
-  round; the planted foot stays on the ground; no bone's motion changes abruptly (second
+  round; the planted foot stays on the ground, measured on the mesh itself (every vertex
+  skinned in the geometry engine's order, within 0.005 model units through a walk and a
+  run); no bone's motion changes abruptly (second
   difference), walking, running, idle and lowering the weapon; the death fall; online
   snapshot interpolation (steady pace, no jumps at packets, no backtracking with irregular
   packets, the relay's 6/8-frame rhythm, counter resets, pauses, teleports).
@@ -163,7 +168,14 @@ resets) are noticed because they move the destination without a snapshot, and sn
 - A four-lens code review (DS hardware, flow and lifecycle, numeric C, tooling), each
   finding checked by a second reviewer. Its fixes: the lobby character's walk-in reset,
   respawns always resetting the gait, alternate polygon IDs for text fading under other
-  text, and the sine table.
+  text, the sine table, the feet's ground contact (it had followed the ankles, 0.42 units
+  above the soles, so toes dipped into the floor mid-stride), the rig parser's bounds, and
+  the lobby's animation timer overflowing after two hours open.
+- The local player's movement against the commit before this work (`9ad56bf`), in melonDS:
+  a scratch build of each fed the same 560-tick input script (run, release, backpedal,
+  strafe, counter-strafe, diagonal) from the same spot and logged the movement core every
+  tick. Speed, velocity and position were identical on every tick. The movement files
+  themselves (`playermove*`, `movement_cfg*`, `movement.cfg`) are unchanged.
 
 ## Risks
 

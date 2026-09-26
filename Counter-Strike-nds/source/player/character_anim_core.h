@@ -57,12 +57,23 @@ typedef struct
     int16_t pivot[3];  // Q12 model units
 } RigBoneInfo;
 
+#define RIG_FOOT_POINTS 32
+
+// Every distinct vertex of a shin, relative to the knee, Q12 model units. Posed, the
+// lowest of them is where that foot meets the ground.
+typedef struct
+{
+    int16_t x[RIG_FOOT_POINTS], y[RIG_FOOT_POINTS], z[RIG_FOOT_POINTS];
+    int count;
+} RigFootOutline;
+
 typedef struct
 {
     RigBoneInfo bones[RIG_BONE_COUNT];
     const uint32_t *displayList; // glCallList format: a word count, then the commands
     uint32_t displayListWords;   // including the count word
-    int32_t restReach;           // the longer leg's reach below the hips in the mesh, Q12
+    RigFootOutline feet[2];      // the left shin's, then the right's
+    int32_t restReach;           // how far below the pelvis the lower sole is in the mesh, Q12
 } CharacterRig;
 
 // Checks the header, the bone hierarchy and the display list bounds. The data must stay

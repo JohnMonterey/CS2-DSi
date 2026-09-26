@@ -167,7 +167,13 @@ static int wrapIndex(int i, int count)
 
 static int32_t progress(int frames, int length)
 {
-    return AnimClamp(frames * ANIM_ONE / length, 0, ANIM_ONE);
+    // Clamped before scaling: lobby.time keeps counting while the lobby is open, and after
+    // a couple of hours frames * ANIM_ONE would overflow.
+    if (frames <= 0)
+        return 0;
+    if (frames >= length)
+        return ANIM_ONE;
+    return frames * ANIM_ONE / length;
 }
 
 static int mix(int a, int b, int32_t t)

@@ -14,6 +14,7 @@
 #define RIG_HEADER_BYTES 12
 #define RIG_BONE_BYTES 12
 #define GX_MTX_RESTORE 0x14
+#define GX_VTX_16 0x23
 
 /*
  * Tuning. World units are the engine's (1 = 40 CS units); per-frame values assume the
@@ -223,6 +224,59 @@ static int gxParameterCount(uint32_t cmd)
     }
 }
 
+typedef struct
+{
+    int32_t thigh; // from straight down, + forward
+    int32_t knee;  // shin relative to thigh, - bends back
+} LegAngles;
+
+// Adds a shin vertex to the foot's outline unless it is already there; false when full.
+static bool addFootPoint(RigFootOutline *foot, int32_t x, int32_t y, int32_t z)
+{
+    for (int n = 0; n < foot->count; n++)
+        if (foot->x[n] == x && foot->y[n] == y && foot->z[n] == z)
+            return true;
+    if (foot->count == RIG_FOOT_POINTS)
+        return false;
+    foot->x[foot->count] = (int16_t)x;
+    foot->y[foot->count] = (int16_t)y;
+    foot->z[foot->count] = (int16_t)z;
+    foot->count++;
+    return true;
+}
+
+// How far below the pelvis a leg's lowest point is, Q12 model units, the way the geometry
+// engine will pose it: the thigh and the shin each turn about their joint by the pose's
+// angle less their rest angle (pitch, + forward towards -z: y becomes y cos - z sin), the
+// knee riding on the thigh and the foot on the shin; then the pelvis rolls the hips by
+// `sway` about its pivot (y becomes x sin + y cos). The pelvis's yaw turns the legs about
+// the vertical, which moves no foot up or down.
+static int32_t legReach(const CharacterRig *rig, int thighBone, LegAngles leg, int32_t sway)
+{
+    const RigBoneInfo *pelvis = &rig->bones[RIG_PELVIS];
+    const RigBoneInfo *thigh = &rig->bones[thighBone];
+    const RigBoneInfo *shin = &rig->bones[thighBone + 1];
+    const RigFootOutline *foot = &rig->feet[thighBone == RIG_THIGH_R];
+
+    int32_t turn = leg.thigh - thigh->restPitch;
+    int32_t kneeY = shin->pivot[1] - thigh->pivot[1], kneeZ = shin->pivot[2] - thigh->pivot[2];
+    int32_t knee = thigh->pivot[1] - pelvis->pivot[1] + ((kneeY * AnimCos(turn) - kneeZ * AnimSin(turn)) >> 12);
+
+    turn = leg.thigh + leg.knee - shin->restPitch;
+    int32_t c = AnimCos(turn), s = AnimSin(turn);
+    int32_t rc = AnimCos(sway), rs = AnimSin(sway);
+    int32_t lowest = INT32_MIN;
+    for (int n = 0; n < foot->count; n++)
+    {
+        int32_t y = knee + ((foot->y[n] * c - foot->z[n] * s) >> 12);
+        int32_t x = shin->pivot[0] + foot->x[n] - pelvis->pivot[0];
+        int32_t depth = -((x * rs + y * rc) >> 12);
+        if (depth > lowest)
+            lowest = depth;
+    }
+    return lowest;
+}
+
 // The hierarchy the pose code is written for; the file has to agree with it.
 static const int8_t expectedParents[RIG_BONE_COUNT] = {
     -1, RIG_ROOT, RIG_PELVIS, RIG_CHEST, RIG_CHEST, RIG_PELVIS, RIG_THIGH_L, RIG_PELVIS, RIG_THIGH_R,
@@ -268,7 +322,9 @@ bool CharacterRig_Parse(CharacterRig *rig, const uint8_t *data, uint32_t size)
 
     // Walk the commands, which must all be real ones: an unknown byte would leave the walk
     // out of step with the hardware's. Every matrix restore must name a slot a bone fills.
+    // On the way, collect each shin's outline from the vertices sent under its matrix.
     uint32_t i = 1;
+    int bone = -1;
     while (i < words)
     {
         uint32_t packed = list[i++];
@@ -281,26 +337,36 @@ bool CharacterRig_Parse(CharacterRig *rig, const uint8_t *data, uint32_t size)
             if (cmd == GX_MTX_RESTORE)
             {
                 uint32_t slot = list[i] - RIG_FIRST_SLOT;
-                bool found = false;
+                bone = -1;
                 for (int b = 0; b < RIG_BONE_COUNT; b++)
-                    found |= rig->bones[b].slot != RIG_NO_SLOT && rig->bones[b].slot == slot;
-                if (!found)
+                    if (rig->bones[b].slot != RIG_NO_SLOT && rig->bones[b].slot == slot)
+                        bone = b;
+                if (bone < 0)
+                    return false;
+            }
+            if (cmd == GX_VTX_16 && (bone == RIG_SHIN_L || bone == RIG_SHIN_R))
+            {
+                const RigBoneInfo *knee = &rig->bones[bone];
+                if (!addFootPoint(&rig->feet[bone == RIG_SHIN_R], (int16_t)(list[i] & 0xFFFF) - knee->pivot[0],
+                                  (int16_t)(list[i] >> 16) - knee->pivot[1],
+                                  (int16_t)(list[i + 1] & 0xFFFF) - knee->pivot[2]))
                     return false;
             }
             i += (uint32_t)params;
         }
     }
+    if (rig->feet[0].count == 0 || rig->feet[1].count == 0)
+        return false;
 
     rig->displayList = list;
     rig->displayListWords = words;
 
-    // How far below the hips the mesh's own feet are: poses keep the lower foot there.
+    // How far below the hips the mesh's own soles are: poses keep the lower foot there.
     for (int thigh = RIG_THIGH_L; thigh <= RIG_THIGH_R; thigh += 2)
     {
-        const RigBoneInfo *upper = &rig->bones[thigh], *lower = &rig->bones[thigh + 1];
-        int32_t reach = (int32_t)(((int64_t)upper->length * AnimCos(upper->restPitch) +
-                                   (int64_t)lower->length * AnimCos(lower->restPitch)) >> 12);
-        if (reach > rig->restReach)
+        LegAngles rest = {rig->bones[thigh].restPitch, rig->bones[thigh + 1].restPitch - rig->bones[thigh].restPitch};
+        int32_t reach = legReach(rig, thigh, rest, 0);
+        if (thigh == RIG_THIGH_L || reach > rig->restReach)
             rig->restReach = reach;
     }
     return true;
@@ -408,12 +474,6 @@ void CharacterAnim_Update(CharacterAnimState *state, const CharacterAnimInput *i
 // Poses
 // ----------------------------------------------------------------------------------------
 
-typedef struct
-{
-    int32_t thigh; // from straight down, + forward
-    int32_t knee;  // shin relative to thigh, - bends back
-} LegAngles;
-
 static void setLeg(RigPose *pose, const CharacterRig *rig, int thighBone, LegAngles leg)
 {
     const RigBoneInfo *thigh = &rig->bones[thighBone];
@@ -424,19 +484,12 @@ static void setLeg(RigPose *pose, const CharacterRig *rig, int thighBone, LegAng
     pose->bones[thighBone + 1].pitch = (int16_t)(leg.knee - (shin->restPitch - thigh->restPitch));
 }
 
-// How far below the hip a leg reaches, Q12 model units.
-static int32_t legReach(const CharacterRig *rig, int thighBone, LegAngles leg)
+// Raises or lowers the body so the lowest point of either foot is where the mesh's soles
+// are, whatever the legs and the hips' sway are doing.
+static int32_t groundOffset(const CharacterRig *rig, LegAngles left, LegAngles right, int32_t sway)
 {
-    const RigBoneInfo *thigh = &rig->bones[thighBone];
-    const RigBoneInfo *shin = &rig->bones[thighBone + 1];
-    return mulQ12(thigh->length, AnimCos(leg.thigh)) + mulQ12(shin->length, AnimCos(leg.thigh + leg.knee));
-}
-
-// Drops the body so the lower foot stays on the ground as the legs bend.
-static int32_t groundOffset(const CharacterRig *rig, LegAngles left, LegAngles right)
-{
-    int32_t reachL = legReach(rig, RIG_THIGH_L, left);
-    int32_t reachR = legReach(rig, RIG_THIGH_R, right);
+    int32_t reachL = legReach(rig, RIG_THIGH_L, left, sway);
+    int32_t reachR = legReach(rig, RIG_THIGH_R, right, sway);
     return (reachL > reachR ? reachL : reachR) - rig->restReach;
 }
 
@@ -475,13 +528,14 @@ void CharacterAnim_Pose(const CharacterAnimState *state, const CharacterRig *rig
     setLeg(pose, rig, RIG_THIGH_L, left);
     setLeg(pose, rig, RIG_THIGH_R, right);
 
-    // The body sits on its lower foot. Other players' crouches and jumps are not known here
-    // (nothing sends them); their hull height already carries both.
-    pose->offset[1] = groundOffset(rig, left, right);
-
     // Hips turn toward the direction of travel, and sway with the steps; the chest turns
     // back so the aim stays where the character looks.
     int32_t sway = mulQ12(ANIM_DEG(2.5), mulQ12(s, move)) + mulQ12(ANIM_DEG(1.5), mulQ12(wave(t, IDLE_PERIOD_SWAY, state->seed * 131), still));
+
+    // The body sits on its lower foot. Other players' crouches and jumps are not known here
+    // (nothing sends them); their hull height already carries both.
+    pose->offset[1] = groundOffset(rig, left, right, sway);
+
     pose->bones[RIG_PELVIS].yaw = (int16_t)state->hipYaw;
     pose->bones[RIG_PELVIS].roll = (int16_t)sway;
 
@@ -524,7 +578,7 @@ void CharacterAnim_Pose(const CharacterAnimState *state, const CharacterRig *rig
         pose->bones[RIG_ARMS].pitch = (int16_t)-mulQ12(ANIM_DEG(80), d);
         pose->bones[RIG_HEAD].pitch = (int16_t)mulQ12(ANIM_DEG(20), d);
         // Lying down, the back rests on the ground rather than sinking through it.
-        pose->offset[1] = mulQ12(groundOffset(rig, dl, dr), ANIM_ONE - fall) + mulQ12(ANIM_ONE * 3 / 10, fall);
+        pose->offset[1] = mulQ12(groundOffset(rig, dl, dr, sway), ANIM_ONE - fall) + mulQ12(ANIM_ONE * 3 / 10, fall);
     }
 }
 
