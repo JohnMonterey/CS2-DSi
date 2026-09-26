@@ -28,6 +28,7 @@ make discover-dsi     # is the console reachable, and what is it running?
 make reset-dsi        # send a running build back to the loader
 make test-dsi         # 33 host tests for the deployment protocol
 make test-movement    # host tests for the CS:GO movement core
+make test-anim        # host tests for character animation, the player rig and online smoothing
 ```
 
 `make run-dsi` returns a running game to the loader, pushes any changed data files, pushes
@@ -240,10 +241,13 @@ the emulator first — if the question is "does this menu look right", answer it
 
 ## Testing what you write
 
-Four test suites, in ascending order of cost and descending order of certainty:
+Five test suites, in ascending order of cost and descending order of certainty:
 
 - `make test-movement` — the CS:GO movement core, compiled for the Mac and checked against
   real reference numbers. No emulator, no console.
+- `make test-anim` — the character animation core and the rig file the game embeds
+  (`data/player_rig.bin`, rebuilt by `tools/assets/player_rig.py`), plus how online players
+  move between position snapshots.
 - `make test-dsi` — 33 host tests driving the *real* deployment service over loopback with
   the *real* client. `tools/dsi/tests/host_service.c` mirrors the loader and runtime control
   flow; if you change how either behaves, change it there too or the tests stop meaning
