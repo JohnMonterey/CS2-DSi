@@ -13,6 +13,7 @@
 #include "party.h"
 #include "player.h"
 #include "character_anim.h"
+#include "lobby.h"
 
 int t1x = 0;
 int t1z = 0;
@@ -488,8 +489,9 @@ void Init2DViewPixelExact(void)
  */
 void Draw3DSceneNotInGame(void)
 {
-    // The main menu's artwork covers the whole top screen: skip the 3D scene under it.
-    if (drawMainMenuTopScreen())
+    // The main menu's artwork covers the whole top screen: skip the 3D scene under it. The
+    // lobby draws its own scene.
+    if (drawMainMenuTopScreen() || drawLobbyTopScreen())
         return;
 
     // Set camera for drawing

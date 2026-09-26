@@ -81,6 +81,7 @@ enum UiMenu
     STATS = 20,
     ENTER_IP = 21,
     AI_Set = 22,
+    LOBBY = 23,
 };
 
 enum shopCategory
@@ -141,6 +142,13 @@ enum shopCategory GetShopCategory();
 int GetWeaponCountVar();
 void SetCheckBoxToShow(int value);
 void startChangeMenu(enum UiMenu menuToShow);
+// The current menu's hooks, for menus kept outside ui.c (see lobby.c).
+extern void (*renderFunction)();
+extern void (*onCloseMenu)();
+extern bool haveToCallOnCloseMenu;
+// A menu that paints the whole bottom screen, buttons included. Set it after
+// startChangeMenu(), which clears it.
+void SetMenuDrawsOwnScreen(bool value);
 void ChangeMenu(int menuId);
 void SetPlayerForUI();
 int printLongText(int minX, int maxX, int y, char *text);

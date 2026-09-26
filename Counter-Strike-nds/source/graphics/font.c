@@ -13,8 +13,11 @@ static const u8 levelAlpha[FONT_LEVELS] = {10, 20, 31};
 
 // A translucent pixel is not drawn over one left by a translucent polygon with the same
 // ID. The levels of one glyph never share a pixel, but neighbouring glyphs can overlap
-// where kerning pulls them together, so each level gets its own ID.
-static const u8 levelPolygonId[FONT_LEVELS] = {61, 62, 63};
+// where kerning pulls them together, so each level gets its own ID. The alternate set is
+// for text drawn over other fading text.
+static const u8 levelPolygonId[2][FONT_LEVELS] = {{61, 62, 63}, {58, 59, 60}};
+
+static void drawText(const Font *font, int x, int y, int z, u32 color, int alpha, int idSet, const char *text);
 
 bool Font_Load(Font *font, const uint8_t *data, uint32_t size)
 {
@@ -70,13 +73,39 @@ bool Font_IsLoaded(const Font *font)
 
 void Font_Draw(const Font *font, int x, int y, int z, u32 color, const char *text)
 {
-    if (!Font_IsLoaded(font))
+    drawText(font, x, y, z, color, 31, 0, text);
+}
+
+void Font_DrawAlpha(const Font *font, int x, int y, int z, u32 color, int alpha, const char *text)
+{
+    drawText(font, x, y, z, color, alpha, 0, text);
+}
+
+void Font_DrawAlphaAlternate(const Font *font, int x, int y, int z, u32 color, int alpha, const char *text)
+{
+    drawText(font, x, y, z, color, alpha, 1, text);
+}
+
+int Font_TextWidth(const Font *font, const char *text)
+{
+    return Font_IsLoaded(font) ? FontData_TextWidth(&font->data, text) : 0;
+}
+
+static void drawText(const Font *font, int x, int y, int z, u32 color, int alpha, int idSet, const char *text)
+{
+    if (!Font_IsLoaded(font) || alpha <= 0)
         return;
+    if (alpha > 31)
+        alpha = 31;
 
     for (int level = 0; level < FONT_LEVELS; level++)
     {
+        // Alpha 0 would draw the level as wireframe, so a level faded that far is skipped.
+        int a = levelAlpha[level] * alpha / 31;
+        if (a < 1)
+            continue;
         // The polygon format is latched when a batch begins.
-        NE_PolyFormat(levelAlpha[level], levelPolygonId[level], 0, NE_CULL_NONE, NE_MODULATION);
+        NE_PolyFormat(a, levelPolygonId[idSet][level], 0, NE_CULL_NONE, NE_MODULATION);
         NE_MaterialUse(font->material);
         GFX_COLOR = color;
         GFX_BEGIN = GL_QUADS;

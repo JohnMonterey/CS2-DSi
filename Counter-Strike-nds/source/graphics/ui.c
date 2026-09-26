@@ -26,6 +26,7 @@
 #include "stats.h"
 #include "debug.h"
 #include "font.h"
+#include "lobby.h"
 #include "font_cs20_bin.h"
 #include "menu_top_bin.h"
 #include "menu_bottom_bin.h"
@@ -102,6 +103,11 @@ bool haveToCallOnCloseMenu = false;
 // Does the menu paint the whole bottom screen, buttons included? Its buttons still take
 // touches. Set in a menu's init; startChangeMenu() clears it for the next menu.
 static bool menuDrawsOwnScreen = false;
+void SetMenuDrawsOwnScreen(bool value)
+{
+    menuDrawsOwnScreen = value;
+}
+
 // Is the menu using the quit button?
 bool useQuitButton = false;
 // Number of checkbox in the menu to render
@@ -2135,7 +2141,7 @@ void initMainMenu()
     // Each button is a full-width strip. The touch areas reach 3 px past the strips so
     // together they cover the gaps between them.
     static void (*const actions[MAIN_MENU_BUTTON_COUNT])(int) = {
-        &initSelectionMapImageMenu,
+        &initLobbyMenu,
         &initJoinCreatePartyMenu,
         &initSettingsMenu,
         &quitGame,

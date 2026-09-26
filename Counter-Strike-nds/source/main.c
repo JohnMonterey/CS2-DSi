@@ -30,6 +30,7 @@
 #include "camera.h"
 #include "dsidev.h"
 #include "character_anim.h"
+#include "lobby.h"
 
 //
 //////Level
@@ -426,6 +427,11 @@ void checkStartGameLoop()
 		}
 		else
 		{
+			// A match started from the lobby has its side already; otherwise ask for it.
+			if (lobbyPendingTeam != SPECTATOR)
+				AllPlayers[0].Team = lobbyPendingTeam;
+			lobbyPendingTeam = SPECTATOR;
+
 			while (AllPlayers[0].Team == SPECTATOR)
 			{
 				readKeys();
@@ -495,6 +501,8 @@ void checkStartGameLoop()
 				Connection = DEBUG_IP_2;
 		}
 		ReadTouchScreen(touch, &NeedChangeScreen, false, &ButtonToShow, &UpdateBottomScreenFrameCount, &SendTeam, true);
+		if (currentMenu == LOBBY)
+			Lobby_Update();
 		UpdateEngineNotInGame();
 	}
 }
