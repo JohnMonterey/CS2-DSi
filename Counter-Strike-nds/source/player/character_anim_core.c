@@ -194,6 +194,35 @@ static uint32_t read32(const uint8_t *p)
     return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+// Parameter words of each geometry command (GBATEK), -1 for bytes that are not commands.
+static int gxParameterCount(uint32_t cmd)
+{
+    switch (cmd)
+    {
+    case 0x00: case 0x11: case 0x15: case 0x41:
+        return 0;
+    case 0x10: case 0x12: case 0x13: case 0x14:
+    case 0x20: case 0x21: case 0x22: case 0x24: case 0x25: case 0x26: case 0x27: case 0x28:
+    case 0x29: case 0x2A: case 0x2B: case 0x30: case 0x31: case 0x32: case 0x33:
+    case 0x40: case 0x50: case 0x60: case 0x72:
+        return 1;
+    case 0x23: case 0x71:
+        return 2;
+    case 0x1B: case 0x1C: case 0x70:
+        return 3;
+    case 0x1A:
+        return 9;
+    case 0x17: case 0x19:
+        return 12;
+    case 0x16: case 0x18:
+        return 16;
+    case 0x34:
+        return 32;
+    default:
+        return -1;
+    }
+}
+
 // The hierarchy the pose code is written for; the file has to agree with it.
 static const int8_t expectedParents[RIG_BONE_COUNT] = {
     -1, RIG_ROOT, RIG_PELVIS, RIG_CHEST, RIG_CHEST, RIG_PELVIS, RIG_THIGH_L, RIG_PELVIS, RIG_THIGH_R,
@@ -232,11 +261,13 @@ bool CharacterRig_Parse(CharacterRig *rig, const uint8_t *data, uint32_t size)
         return false;
 
     const uint32_t *list = (const uint32_t *)(const void *)(data + listOffset);
-    uint32_t words = list[0] + 1;
-    if (list[0] == 0 || (size - listOffset) / 4 < words)
+    // Checked before adding the count word, so a count near 2^32 cannot wrap to a small one.
+    if (list[0] == 0 || list[0] > (size - listOffset) / 4 - 1)
         return false;
+    uint32_t words = list[0] + 1;
 
-    // Every matrix restore in the list must name a slot some bone fills.
+    // Walk the commands, which must all be real ones: an unknown byte would leave the walk
+    // out of step with the hardware's. Every matrix restore must name a slot a bone fills.
     uint32_t i = 1;
     while (i < words)
     {
@@ -244,30 +275,19 @@ bool CharacterRig_Parse(CharacterRig *rig, const uint8_t *data, uint32_t size)
         for (int k = 0; k < 4; k++)
         {
             uint32_t cmd = (packed >> (8 * k)) & 0xFF;
-            uint32_t params;
-            switch (cmd)
-            {
-            case 0x00: case 0x11: case 0x15: case 0x41: params = 0; break;
-            case 0x23: case 0x71: params = 2; break;
-            case 0x1B: case 0x1C: case 0x70: params = 3; break;
-            case 0x19: case 0x17: params = 12; break;
-            case 0x1A: params = 9; break;
-            case 0x16: case 0x18: params = 16; break;
-            case 0x34: params = 32; break;
-            default: params = 1; break;
-            }
-            if (i + params > words)
+            int params = gxParameterCount(cmd);
+            if (params < 0 || i + (uint32_t)params > words)
                 return false;
             if (cmd == GX_MTX_RESTORE)
             {
                 uint32_t slot = list[i] - RIG_FIRST_SLOT;
                 bool found = false;
                 for (int b = 0; b < RIG_BONE_COUNT; b++)
-                    found |= rig->bones[b].slot == slot;
+                    found |= rig->bones[b].slot != RIG_NO_SLOT && rig->bones[b].slot == slot;
                 if (!found)
                     return false;
             }
-            i += params;
+            i += (uint32_t)params;
         }
     }
 

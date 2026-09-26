@@ -137,10 +137,11 @@ static bool loadRig(const char *path)
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
-    // Word-aligned, as bin2o places it on the console.
-    g_rigData = aligned_alloc(4, (size_t)((size + 3) & ~3L));
+    // malloc's alignment covers the 4 bytes bin2o gives the file on the console. (Not
+    // aligned_alloc: macOS refuses alignments below the size of a pointer.)
+    g_rigData = malloc((size_t)size + 16);
     g_rigSize = (uint32_t)size;
-    bool ok = fread(g_rigData, 1, (size_t)size, f) == (size_t)size;
+    bool ok = g_rigData != NULL && fread(g_rigData, 1, (size_t)size, f) == (size_t)size;
     fclose(f);
     return ok;
 }
@@ -148,7 +149,9 @@ static bool loadRig(const char *path)
 static bool parseCopy(void (*damage)(uint8_t *copy, uint32_t *size))
 {
     uint32_t size = g_rigSize;
-    uint8_t *copy = aligned_alloc(4, (size_t)((size + 3) & ~3u) + 16);
+    uint8_t *copy = malloc((size_t)size + 16);
+    if (copy == NULL)
+        return false;
     memcpy(copy, g_rigData, size);
     damage(copy, &size);
     CharacterRig rig;
@@ -165,6 +168,15 @@ static void truncated(uint8_t *c, uint32_t *s) { (void)c; *s -= 8; }
 static void headerOnly(uint8_t *c, uint32_t *s) { (void)c; *s = 40; }
 static void wrongParent(uint8_t *c, uint32_t *s) { (void)s; c[12 + 12 * RIG_HEAD] = RIG_PELVIS; }
 static void slotOverflow(uint8_t *c, uint32_t *s) { (void)s; c[12 + 12 * RIG_SHIN_R + 1] = 9; }
+
+// The display list starts after the header and the bone table: a word count, then the first
+// packed word, BEGIN_VTXS MTX_RESTORE TEXCOORD NORMAL, then their parameters.
+#define LIST_OFFSET (12 + 12 * RIG_BONE_COUNT)
+static uint32_t *listWords(uint8_t *c) { return (uint32_t *)(void *)(c + LIST_OFFSET); }
+static void hugeCount(uint8_t *c, uint32_t *s) { (void)s; listWords(c)[0] = 0xFFFFFFFFu; }
+static void restoreRootSlot(uint8_t *c, uint32_t *s) { (void)s; listWords(c)[3] = RIG_FIRST_SLOT + RIG_NO_SLOT; }
+static void restoreUnfilledSlot(uint8_t *c, uint32_t *s) { (void)s; listWords(c)[3] = RIG_FIRST_SLOT - 1; }
+static void unknownCommand(uint8_t *c, uint32_t *s) { (void)s; listWords(c)[1] = (listWords(c)[1] & ~0xFFu) | 0x42; }
 
 static void testRigFile(void)
 {
@@ -189,9 +201,10 @@ static void testRigFile(void)
     for (int b = RIG_THIGH_L; b <= RIG_SHIN_R; b++)
         CHECK(g_rig.bones[b].length > ANIM_ONE / 4 && g_rig.bones[b].length < ANIM_ONE,
               "leg bone %d is a plausible length (%d)", b, g_rig.bones[b].length);
-    CHECK(g_rig.displayListWords > 1000 && g_rig.displayList[0] + 1 == g_rig.displayListWords,
-          "the display list is the rest of the file");
-    CHECK((uintptr_t)g_rig.displayList % 4 == 0, "the display list is word aligned for DMA");
+    CHECK(g_rig.displayListWords > 1000 && g_rigSize == LIST_OFFSET + 4 * g_rig.displayListWords,
+          "the display list is the rest of the file (%u bytes, list of %u words)", g_rigSize, g_rig.displayListWords);
+    CHECK(listWords(g_rigData)[1] == 0x21221440u,
+          "the list opens with BEGIN_VTXS, MTX_RESTORE, TEXCOORD, NORMAL (the damage cases rely on it)");
 
     CHECK(parseCopy(noDamage), "an intact copy parses");
     CHECK(!parseCopy(badMagic), "a bad magic is refused");
@@ -201,6 +214,10 @@ static void testRigFile(void)
     CHECK(!parseCopy(headerOnly), "a file without its display list is refused");
     CHECK(!parseCopy(wrongParent), "a rearranged hierarchy is refused");
     CHECK(!parseCopy(slotOverflow), "a slot past the top of the stack is refused");
+    CHECK(!parseCopy(hugeCount), "a word count that would wrap is refused");
+    CHECK(!parseCopy(restoreRootSlot), "a restore of the root's no-slot marker is refused");
+    CHECK(!parseCopy(restoreUnfilledSlot), "a restore of a slot no bone fills is refused");
+    CHECK(!parseCopy(unknownCommand), "a byte that is not a geometry command is refused");
     CharacterRig rig;
     CHECK(!CharacterRig_Parse(&rig, g_rigData + 2, g_rigSize - 2), "unaligned data is refused");
     CHECK(!CharacterRig_Parse(&rig, NULL, 100), "NULL is refused");
