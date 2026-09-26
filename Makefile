@@ -102,12 +102,14 @@ test-movement:
 	      -o $(MOVEMENT_TEST_BIN) $(MOVEMENT_TEST_SRC)
 	$(MOVEMENT_TEST_BIN) Counter-Strike-nds/movement.cfg
 # Host tests for the character animation core: the rig file the game embeds, the poses the
-# console will draw from it, and how online players move between position snapshots.
+# console will draw from it, how online players move between position snapshots, and the
+# tombstones the dead leave.
 # Regenerate the rig with tools/assets/player_rig.py.
 ANIM_TEST_BIN := Counter-Strike-nds/tests/anim/.build/test_anim
 ANIM_TEST_SRC := Counter-Strike-nds/tests/anim/test_anim.c \
                  Counter-Strike-nds/source/player/character_anim_core.c \
-                 Counter-Strike-nds/source/network/remote_lerp.c
+                 Counter-Strike-nds/source/network/remote_lerp.c \
+                 Counter-Strike-nds/source/player/tombstone_core.c
 test-anim:
 	@mkdir -p $(dir $(ANIM_TEST_BIN))
 	$(CC) -std=gnu17 -Wall -Wextra -Werror -O2 \

@@ -28,6 +28,15 @@ void CharacterAnim_UpdatePlayers(void);
 // polygon format as it found it.
 void CharacterAnim_DrawPlayer(int playerIndex);
 
+// The facing a player's body is drawn with (ANIM_TURN units). A dead body keeps the facing
+// it had when it died. False when the rig has no state for that player.
+bool CharacterAnim_Facing(int playerIndex, int32_t *yaw);
+
+// A dead body's polygon alpha as it fades out after the fall: 31 while alive or still
+// falling, then down to 1, then 0 once it is gone (alpha 0 would draw it as wireframe, so
+// 0 means do not draw it). 31 when the rig has no state for that player.
+int CharacterAnim_BodyAlpha(int playerIndex);
+
 // Draws the rig anywhere: x, y, z are world coordinates (f32), yaw is ANIM_TURN units
 // with the model's usual meaning, and scale is f32 per axis.
 void CharacterRig_Draw(const RigPose *pose, NE_Material *material, int x, int y, int z, int yaw,

@@ -24,7 +24,9 @@ int speedAimingReCenterTimer = 10;
 void checkCameraPlayerView(bool left, bool *Found, int *FirstFound, int i)
 {
     Player *player = &AllPlayers[i];
-    if (!player->IsDead && player->Id != UNUSED && (allPartyModes[currentPartyMode].canSeeOtherTeamView || player->Team == localPlayer->Team))
+    // The living, and the dead local player's own grave (its death view).
+    bool ownGrave = i == 0 && localPlayer->IsDead;
+    if (ownGrave || (!player->IsDead && player->Id != UNUSED && (allPartyModes[currentPartyMode].canSeeOtherTeamView || player->Team == localPlayer->Team)))
     {
         if (*FirstFound == NO_PLAYER)
             *FirstFound = i;
@@ -123,7 +125,7 @@ void changeCameraPlayerView(bool left)
     // Find first player available for view
     if (left)
     {
-        for (int i = MaxPlayer - 1; i > 0; i--)
+        for (int i = MaxPlayer - 1; i >= 0; i--)
         {
             checkCameraPlayerView(left, &Found, &FirstFound, i);
             if (Found)
@@ -132,7 +134,7 @@ void changeCameraPlayerView(bool left)
     }
     else
     {
-        for (int i = 1; i < MaxPlayer; i++)
+        for (int i = 0; i < MaxPlayer; i++)
         {
             checkCameraPlayerView(left, &Found, &FirstFound, i);
             if (Found)

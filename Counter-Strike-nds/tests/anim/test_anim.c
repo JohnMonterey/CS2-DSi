@@ -9,6 +9,7 @@
 
 #include "character_anim_core.h"
 #include "remote_lerp.h"
+#include "tombstone_core.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -744,6 +745,442 @@ static void testRemoteLerp(void)
     CHECK(out[0] == 7 && RemoteLerp_Targets(&lerp, (float[3]){7, 0, 0}), "a snap lands at once");
 }
 
+/* ---------------------------------------------------------------------- *
+ * Tombstones
+ * ---------------------------------------------------------------------- */
+
+static int32_t mulQ12Test(int32_t a, int32_t b)
+{
+    return (int32_t)(((int64_t)a * b) >> 12);
+}
+
+static void tombNormal(const TombPolygon *p, double n[3])
+{
+    double ux = p->v[1].x - p->v[0].x, uy = p->v[1].y - p->v[0].y, uz = p->v[1].z - p->v[0].z;
+    double vx = p->v[2].x - p->v[0].x, vy = p->v[2].y - p->v[0].y, vz = p->v[2].z - p->v[0].z;
+    n[0] = uy * vz - uz * vy;
+    n[1] = uz * vx - ux * vz;
+    n[2] = ux * vy - uy * vx;
+}
+
+static bool sameVertex(const TombVertex *a, const TombVertex *b)
+{
+    return a->x == b->x && a->y == b->y && a->z == b->z;
+}
+
+static void testTombMesh(bool ct)
+{
+    TombMesh mesh;
+    Tomb_BuildMesh(&mesh, ct, ANIM_ONE);
+    const char *name = ct ? "CT" : "T";
+
+    int stone = 0, letters = 0, unsorted = 0, nonPlanar = 0, inward = 0, outOfRange = 0;
+    bool engraving = false;
+    int32_t minY = 1 << 30, maxY = -(1 << 30);
+    double centre[3] = {0, (TOMB_TOP - TOMB_SINK) / 2.0, 0};
+    for (int i = 0; i < mesh.count; i++)
+    {
+        const TombPolygon *p = &mesh.polygons[i];
+        // The stone's quads, its triangles, then the engraving.
+        if (engraving && !p->letter)
+            unsorted++;
+        engraving |= p->letter;
+        if (i > 0 && !p->letter && p->count > mesh.polygons[i - 1].count)
+            unsorted++;
+        double n[3];
+        tombNormal(p, n);
+        if (p->count == 4)
+        {
+            double d = (p->v[3].x - p->v[0].x) * n[0] + (p->v[3].y - p->v[0].y) * n[1] + (p->v[3].z - p->v[0].z) * n[2];
+            if (fabs(d) > 0.5)
+                nonPlanar++;
+        }
+        double c[3] = {0, 0, 0};
+        for (int k = 0; k < p->count; k++)
+        {
+            c[0] += p->v[k].x / (double)p->count;
+            c[1] += p->v[k].y / (double)p->count;
+            c[2] += p->v[k].z / (double)p->count;
+            if (abs(p->v[k].x) >= 8 * 4096 || abs(p->v[k].y) >= 8 * 4096 || abs(p->v[k].z) >= 8 * 4096)
+                outOfRange++;
+            if (!p->letter)
+            {
+                if (p->v[k].y < minY)
+                    minY = p->v[k].y;
+                if (p->v[k].y > maxY)
+                    maxY = p->v[k].y;
+            }
+        }
+        if (p->letter)
+        {
+            letters++;
+            if (n[2] >= 0)
+                inward++;
+        }
+        else
+        {
+            stone++;
+            // The stone is convex, so every face points away from its middle.
+            if (n[0] * (c[0] - centre[0]) + n[1] * (c[1] - centre[1]) + n[2] * (c[2] - centre[2]) <= 0)
+                inward++;
+        }
+    }
+    CHECK(mesh.count <= TOMB_MAX_POLYGONS && stone == 17 && letters == (ct ? 5 : 2),
+          "%s stone: %d polygons, %d of them engraving", name, stone, letters);
+    CHECK(unsorted == 0, "%s stone: quads, triangles, engraving (%d out of order)", name, unsorted);
+    CHECK(nonPlanar == 0 && outOfRange == 0, "%s stone: flat quads (%d not), vertices in VTX_16 range (%d not)", name,
+          nonPlanar, outOfRange);
+    CHECK(inward == 0, "%s stone: every face wound counter-clockwise from outside, as the rig (%d not)", name, inward);
+    CHECK(minY == -TOMB_SINK && maxY == TOMB_TOP, "%s stone: from %.3f below the ground to %.3f above", name,
+          -minY / 4096.0, maxY / 4096.0);
+
+    // Closed: every edge of the stone is shared by exactly two faces, once in each direction,
+    // so from any side, above or below the ground, there is no hole to see through.
+    int open = 0, doubled = 0;
+    for (int i = 0; i < mesh.count; i++)
+    {
+        const TombPolygon *p = &mesh.polygons[i];
+        if (p->letter)
+            continue;
+        for (int k = 0; k < p->count; k++)
+        {
+            const TombVertex *a = &p->v[k], *b = &p->v[(k + 1) % p->count];
+            int reverse = 0, same = 0;
+            for (int j = 0; j < mesh.count; j++)
+            {
+                const TombPolygon *q = &mesh.polygons[j];
+                if (q->letter)
+                    continue;
+                for (int m = 0; m < q->count; m++)
+                {
+                    const TombVertex *c = &q->v[m], *d = &q->v[(m + 1) % q->count];
+                    if (sameVertex(a, d) && sameVertex(b, c))
+                        reverse++;
+                    if (sameVertex(a, c) && sameVertex(b, d))
+                        same++;
+                }
+            }
+            if (reverse != 1)
+                open++;
+            if (same != 1)
+                doubled++;
+        }
+    }
+    CHECK(open == 0 && doubled == 0, "%s stone: closed, every edge shared once each way (%d open, %d repeated)", name,
+          open, doubled);
+
+    // The engraving: raised on the front face, on its upright part, reading left to right for
+    // someone facing it (the reader's left is the stone's +x).
+    int stray = 0;
+    double minX[5], maxX[5], minV[5], maxV[5];
+    int l = 0;
+    for (int i = 0; i < mesh.count; i++)
+    {
+        const TombPolygon *p = &mesh.polygons[i];
+        if (!p->letter)
+            continue;
+        minX[l] = minV[l] = 1e9;
+        maxX[l] = maxV[l] = -1e9;
+        for (int k = 0; k < p->count; k++)
+        {
+            double x = p->v[k].x / 4096.0, y = p->v[k].y / 4096.0;
+            double w = TOMB_HALF_WIDTH / 4096.0, h = TOMB_SHOULDER / 4096.0;
+            bool onFace = fabs(x) < w - 0.02 && y > 0.1 && y <= h - 0.02;
+            // Clear of the face by at least 0.04: the depth buffer tells that apart to ~10 units.
+            if (p->v[k].z > -TOMB_HALF_THICKNESS - 164 || p->v[k].z < -TOMB_HALF_THICKNESS - 410 || !onFace)
+                stray++;
+            minX[l] = fmin(minX[l], x);
+            maxX[l] = fmax(maxX[l], x);
+            minV[l] = fmin(minV[l], y);
+            maxV[l] = fmax(maxV[l], y);
+        }
+        l++;
+    }
+    CHECK(stray == 0, "%s stone: the engraving lies on the front, below the round top (%d vertices elsewhere)", name,
+          stray);
+    if (ct)
+    {
+        // C (three bars) then T (two); the C to the reader's left, its upright bar at its left.
+        CHECK(fmax(maxX[3], maxX[4]) < fmin(fmin(minX[0], minX[1]), minX[2]), "CT reads C then T");
+        CHECK(maxX[0] >= maxX[1] && maxX[0] >= maxX[2] && maxV[0] - minV[0] > maxV[1] - minV[1],
+              "the C opens to the reader's right");
+    }
+    else
+    {
+        CHECK(fabs((minX[0] + maxX[0]) / 2) < 0.01 && fabs((minX[1] + maxX[1]) / 2) < 0.01, "T is centred");
+    }
+}
+
+static void testTombstone(void)
+{
+    section("tombstones");
+    testTombMesh(true);
+    testTombMesh(false);
+
+    // In the map's shadow the stone is darker, and the engraving still stands out: dark
+    // letters on the face around them, by at least 2:1.
+    TombMesh lit, dim;
+    Tomb_BuildMesh(&lit, true, ANIM_ONE);
+    Tomb_BuildMesh(&dim, true, TOMB_SHADOW_LIGHT);
+    bool darker = lit.count == dim.count;
+    int letterLevel = 0, faceLevel = 0;
+    for (int i = 0; i < lit.count && darker; i++)
+        for (int k = 0; k < lit.polygons[i].count; k++)
+        {
+            int a = lit.polygons[i].v[k].color & 31, b = dim.polygons[i].v[k].color & 31;
+            if (b > a || (a > 3 && b >= a))
+                darker = false;
+            if (lit.polygons[i].letter)
+                letterLevel = a;
+            else if (lit.polygons[i].v[k].z == -TOMB_HALF_THICKNESS && lit.polygons[i].v[k].y == -TOMB_SINK)
+                faceLevel = faceLevel ? faceLevel : a;
+        }
+    // The face at the letters' height, between its buried bottom and its shoulder.
+    int faceAtLetters = faceLevel + (18 - faceLevel) * (TOMB_SINK + 1475) / (TOMB_SINK + TOMB_SHOULDER);
+    CHECK(darker, "a stone in shadow is darker all over");
+    CHECK(faceAtLetters >= 2 * letterLevel, "the engraving stands out (face %d, letters %d)", faceAtLetters, letterLevel);
+
+    // The engraving faces the way the player faced: glRotateYi(yaw) takes the front (-z) to
+    // the character's forward, (-sin yaw, -cos yaw).
+    double worst = 0;
+    for (int32_t yaw = -ANIM_TURN; yaw < ANIM_TURN; yaw += 1237)
+    {
+        Affine r = affRotate(1, yaw);
+        double fx = -r.m[0][2], fz = -r.m[2][2]; // the rotated (0, 0, -1)
+        double ex = -sin(yaw * TURN_RAD / ANIM_TURN), ez = -cos(yaw * TURN_RAD / ANIM_TURN);
+        worst = fmax(worst, fabs(fx - ex) + fabs(fz - ez));
+    }
+    CHECK(worst < 1e-9, "the engraving faces the player's last facing (off by %.2g)", worst);
+    // It stands a little ahead of the spot, clear of the fallen feet, but inside the hull
+    // (0.35 either way), so not in a wall the player stood against.
+    CHECK(TOMB_AHEAD + TOMB_HALF_THICKNESS <= 1434 && TOMB_AHEAD - TOMB_HALF_THICKNESS >= 600,
+          "the stone stands inside the player's hull, ahead of its feet");
+
+    // The body: whole through the fall, then fading, never alpha 0 while drawn, then gone.
+    bool monotonic = true, zeroEarly = false;
+    int last = 31;
+    for (int32_t f = -1; f < TOMB_FADE_START + TOMB_FADE_FRAMES + 30; f++)
+    {
+        int a = Tomb_BodyAlpha(f);
+        if (a > last)
+            monotonic = false;
+        if (a == 0 && f < TOMB_FADE_START + TOMB_FADE_FRAMES)
+            zeroEarly = true;
+        last = a;
+    }
+    CHECK(Tomb_BodyAlpha(-1) == 31 && Tomb_BodyAlpha(0) == 31 && Tomb_BodyAlpha(TOMB_FADE_START - 1) == 31,
+          "alive, and falling, the body is solid");
+    CHECK(TOMB_FADE_START >= 40, "the fade waits for the fall (40 frames) to end");
+    CHECK(Tomb_BodyAlpha(TOMB_FADE_START) < 31 && Tomb_BodyAlpha(TOMB_FADE_START + TOMB_FADE_FRAMES / 4) <= 18,
+          "then it leaves full strength quickly (%d a quarter of the way)",
+          Tomb_BodyAlpha(TOMB_FADE_START + TOMB_FADE_FRAMES / 4));
+    CHECK(monotonic && !zeroEarly, "the body only fades, and stays drawable until it is gone");
+    CHECK(Tomb_BodyAlpha(TOMB_FADE_START + TOMB_FADE_FRAMES - 1) <= 2 &&
+              Tomb_BodyAlpha(TOMB_FADE_START + TOMB_FADE_FRAMES) == 0 && Tomb_BodyAlpha(1 << 20) == 0,
+          "the body fades all the way out, and stays gone");
+    CHECK(TOMB_FADE_FRAMES >= 60 && TOMB_FADE_START + TOMB_FADE_FRAMES >= 100,
+          "it goes slowly: fading for %.2f s, gone %.2f s after the death", TOMB_FADE_FRAMES / 60.0,
+          (TOMB_FADE_START + TOMB_FADE_FRAMES) / 60.0);
+    // Training, deathmatch and gun game respawn after 2 s: gone by then, not popped away.
+    CHECK(TOMB_FADE_START + TOMB_FADE_FRAMES < 120, "the body is gone before a 2 s respawn (%d frames)",
+          TOMB_FADE_START + TOMB_FADE_FRAMES);
+
+    // The stone: hidden, then growing out of its buried bottom, then standing; and, when its
+    // player dies again, the same backwards. However deep it is buried, no vertex ever goes
+    // below its bottom at rest, so it never reaches through a floor it clears standing.
+    TombMesh stoneMesh;
+    Tomb_BuildMesh(&stoneMesh, true, ANIM_ONE);
+    const int32_t sinks[] = {TOMB_SINK_FLAT, TOMB_SINK_SLOPE, 2 * TOMB_SINK_SLOPE};
+    bool rises = true, folded = true, rests = true, neverBelow = true, sinksBack = true;
+    int32_t worstStep = 0;
+    for (int n = 0; n < 3; n++)
+    {
+        int32_t sink = sinks[n];
+        int32_t prevTop = INT32_MIN;
+        for (int32_t age = TOMB_RISE_START; age <= TOMB_RISE_START + TOMB_RISE_FRAMES + 10; age++)
+        {
+            int32_t o = Tomb_RiseOffset(age, sink), top = INT32_MIN, bottom = INT32_MAX;
+            for (int i = 0; i < stoneMesh.count; i++)
+                for (int k = 0; k < stoneMesh.polygons[i].count; k++)
+                {
+                    int32_t y = Tomb_VertexY(stoneMesh.polygons[i].v[k].y, sink, o);
+                    top = y > top ? y : top;
+                    bottom = y < bottom ? y : bottom;
+                }
+            if (bottom < -sink)
+                neverBelow = false;
+            if (age == TOMB_RISE_START && top != -sink)
+                folded = false;
+            if (top < prevTop || o > 0)
+                rises = false;
+            if (prevTop != INT32_MIN && top > 0 && top - prevTop > worstStep)
+                worstStep = top - prevTop;
+            prevTop = top;
+            if (age >= TOMB_RISE_START + TOMB_RISE_FRAMES && (top != TOMB_TOP || bottom != -sink))
+                rests = false;
+        }
+        int32_t before = 0;
+        for (int32_t age = 0; age <= TOMB_SINK_FRAMES; age++)
+        {
+            int32_t o = Tomb_SinkOffset(age, sink);
+            if (o > before || Tomb_VertexY(TOMB_TOP, sink, o) < -sink)
+                sinksBack = false;
+            before = o;
+        }
+        if (Tomb_VertexY(TOMB_TOP, sink, Tomb_SinkOffset(TOMB_SINK_FRAMES, sink)) != -sink)
+            sinksBack = false;
+    }
+    CHECK(!Tomb_Visible(TOMB_RISE_START - 1) && Tomb_Visible(TOMB_RISE_START), "the stone appears at its time");
+    CHECK(folded, "it starts folded into its buried bottom, top and all");
+    CHECK(rises && rests, "it only grows, and comes to rest standing with its bottom buried");
+    CHECK(neverBelow, "no part of it ever goes below its buried bottom");
+    CHECK(worstStep < TOMB_TOP / 4, "it grows smoothly (at most %.3f a frame)", worstStep / 4096.0);
+    CHECK(sinksBack && !Tomb_Sunk(TOMB_SINK_FRAMES - 1) && Tomb_Sunk(TOMB_SINK_FRAMES),
+          "an old stone folds back into the ground the same way");
+    CHECK(Tomb_BodyAlpha(TOMB_RISE_START) <= 8 && Tomb_BodyAlpha(TOMB_RISE_START) > 0,
+          "it rises once the body is faint (alpha %d), not through a solid one", Tomb_BodyAlpha(TOMB_RISE_START));
+    CHECK(abs(TOMB_RISE_START + TOMB_RISE_FRAMES - (TOMB_FADE_START + TOMB_FADE_FRAMES)) <= 2,
+          "and stands as the body vanishes");
+
+    // The ground under a death spot.
+    const int32_t U = 4096;
+    TombGroundProbe probe;
+    Tomb_ProbeBegin(&probe, 0, 0, 0);
+    Tomb_ProbeBox(&probe, -U, U, -U, U, 0);
+    CHECK(Tomb_ProbeGround(&probe) == 0, "on a floor: the floor");
+
+    Tomb_ProbeBegin(&probe, 0, 0, 3 * U);
+    Tomb_ProbeBox(&probe, -U, U, -U, U, 0);
+    CHECK(Tomb_ProbeGround(&probe) == 0, "killed in mid-air: the floor below");
+
+    Tomb_ProbeBegin(&probe, 0, 0, 0);
+    Tomb_ProbeBox(&probe, -U, U, -U, U, U);
+    Tomb_ProbeBox(&probe, -U, U, -U, U, 0);
+    CHECK(Tomb_ProbeGround(&probe) == 0, "a surface well above the feet is not the ground");
+
+    Tomb_ProbeBegin(&probe, 0, 0, 0);
+    Tomb_ProbeBox(&probe, -U, U, -U, U, U * 3 / 10);
+    CHECK(Tomb_ProbeGround(&probe) == U * 3 / 10, "a body sunk a little into its floor still finds it");
+
+    Tomb_ProbeBegin(&probe, 0, 0, 2 * U);
+    Tomb_ProbeBox(&probe, -U, U, -U, U, 2 * U);
+    Tomb_ProbeBox(&probe, -4 * U, 4 * U, -4 * U, 4 * U, 0);
+    CHECK(Tomb_ProbeGround(&probe) == 2 * U, "on an upper level: that level, not the one under it");
+
+    Tomb_ProbeBegin(&probe, U + 1, 0, 2 * U);
+    Tomb_ProbeBox(&probe, -U, U, -U, U, 2 * U);
+    Tomb_ProbeBox(&probe, -4 * U, 4 * U, -4 * U, 4 * U, 0);
+    CHECK(Tomb_ProbeGround(&probe) == 0, "past a ledge: the floor below it");
+
+    Tomb_ProbeBegin(&probe, U, U, 0);
+    Tomb_ProbeBox(&probe, -U, U, -U, U, 0);
+    CHECK(probe.found, "the edge of a box counts as on it");
+
+    Tomb_ProbeBegin(&probe, 0, U / 2, U);
+    Tomb_ProbeBox(&probe, -4 * U, 4 * U, -4 * U, 4 * U, -U / 10);
+    Tomb_ProbeRamp(&probe, -U, U, 0, U, false, 0, U);
+    CHECK(abs(Tomb_ProbeGround(&probe) - U / 2) <= 1, "on a ramp along z: its surface there (%.3f)",
+          Tomb_ProbeGround(&probe) / 4096.0);
+
+    Tomb_ProbeBegin(&probe, U / 4, 0, U);
+    Tomb_ProbeRamp(&probe, 0, U, -U, U, true, U, 0);
+    CHECK(abs(Tomb_ProbeGround(&probe) - U * 3 / 4) <= 1, "on a ramp along x, falling: its surface there (%.3f)",
+          Tomb_ProbeGround(&probe) / 4096.0);
+
+    Tomb_ProbeBegin(&probe, 10 * U, 10 * U, U);
+    Tomb_ProbeBox(&probe, -U, U, -U, U, 0);
+    CHECK(!probe.found && Tomb_ProbeGround(&probe) == U, "nothing under the point: the feet");
+}
+
+/* Where a stone stands, on small made-up maps. */
+static void testTombPlacement(void)
+{
+    section("where a tombstone stands");
+    const int32_t U = 4096, FEET_REACH = 1843;
+    TombPlacement at;
+
+    // Flat floor, facing -z: on the floor, just ahead, buried a little.
+    TombBox floor0 = {-8 * U, 8 * U, -8 * U, 8 * U, 0};
+    TombMap flat = {&floor0, 1, NULL, 0};
+    Tomb_Place(&flat, 0, 0, 0, FEET_REACH, 0, &at);
+    CHECK(at.ground == 0 && at.sink == TOMB_SINK_FLAT && at.x == 0 && at.z < 0 && at.z >= -TOMB_AHEAD,
+          "on a floor: on it, a little ahead, buried %.2f", at.sink / 4096.0);
+
+    // It stays inside the hull whichever way the player faced, so out of any wall it touched.
+    bool inside = true;
+    double worstOut = 0;
+    for (int32_t yaw = 0; yaw < ANIM_TURN; yaw += 1111)
+    {
+        Tomb_Place(&flat, 0, 0, 0, FEET_REACH, yaw, &at);
+        double s = sin(yaw * TURN_RAD / ANIM_TURN), c = cos(yaw * TURN_RAD / ANIM_TURN);
+        for (int k = 0; k < 4; k++)
+        {
+            double a = (k & 1) ? 1 : -1, b = (k & 2) ? 1 : -1;
+            double w = TOMB_HALF_WIDTH / 4096.0, d = TOMB_HALF_THICKNESS / 4096.0;
+            double x = at.x / 4096.0 + a * w * c - b * d * s, z = at.z / 4096.0 - a * w * s - b * d * c;
+            worstOut = fmax(worstOut, fmax(fabs(x), fabs(z)));
+            if (fabs(x) > 0.3501 || fabs(z) > 0.3501)
+                inside = false;
+        }
+    }
+    CHECK(inside, "at any facing the stone stays inside the player's hull (reaches %.4f of 0.35)", worstOut);
+
+    // Killed in mid-air: on the floor below.
+    Tomb_Place(&flat, 0, 0, 3 * U, FEET_REACH, 0, &at);
+    CHECK(at.ground == 0, "killed in mid-air: on the floor below");
+
+    // No floor at all: at the feet, buried deep.
+    TombMap none = {NULL, 0, NULL, 0};
+    Tomb_Place(&none, 0, 0, U, FEET_REACH, 0, &at);
+    CHECK(at.ground == U && at.sink >= TOMB_SINK_SLOPE, "no floor known: at the feet, buried deep");
+
+    // The seam at a ramp's top: a 0.33 gap between the ramp and its platform, with the floor
+    // far below. The hull stands on both; so does the stone.
+    TombBox seamBoxes[2] = {{-8 * U, 8 * U, -8 * U, 16 * U, -3 * U}, {-2 * U, 2 * U, 4 * U + 1352, 8 * U, 2 * U}};
+    TombRamp seamRamp = {-2 * U, 2 * U, 0, 4 * U, false, 0, 2 * U};
+    TombMap seam = {seamBoxes, 2, &seamRamp, 1};
+    Tomb_Place(&seam, 0, 4 * U + 676, 2 * U, FEET_REACH, 0, &at);
+    CHECK(at.ground == 2 * U, "on the seam at a ramp's top: on the platform (%.2f), not the floor below",
+          at.ground / 4096.0);
+
+    // A ledge: a platform ending at x = 0, a floor 2 below. Centred 0.1 inside the edge, the
+    // stone (0.54 wide across x) would hang over it: moved back on. Centred 0.2 past the
+    // edge, the hull still stands on the platform: so does the stone, moved back onto it.
+    TombBox ledgeBoxes[2] = {{-8 * U, 8 * U, -8 * U, 8 * U, -U}, {-4 * U, 0, -4 * U, 4 * U, U}};
+    TombMap ledge = {ledgeBoxes, 2, NULL, 0};
+    Tomb_Place(&ledge, -U / 10, 0, U, FEET_REACH, 0, &at);
+    CHECK(at.ground == U && at.x + TOMB_HALF_WIDTH <= 0 && at.sink == TOMB_SINK_FLAT,
+          "0.1 inside a ledge: on it, moved back so no corner hangs over (edge at %.3f)",
+          (at.x + TOMB_HALF_WIDTH) / 4096.0);
+    Tomb_Place(&ledge, U / 5, 0, U, FEET_REACH, 0, &at);
+    CHECK(at.ground == U && at.x + TOMB_HALF_WIDTH <= 0, "0.2 past a ledge: back on the ledge it stood on (edge at %.3f)",
+          (at.x + TOMB_HALF_WIDTH) / 4096.0);
+
+    // On a ramp rising along z at 0.5, turned side on: its ends stand at different heights,
+    // and it goes deep enough below the lower one for the steps a ramp line can hide.
+    TombRamp slopeRamp = {-4 * U, 4 * U, -4 * U, 4 * U, false, -2 * U, 2 * U};
+    TombMap slope = {NULL, 0, &slopeRamp, 1};
+    Tomb_Place(&slope, 0, 0, 0, FEET_REACH, ANIM_TURN / 4, &at);
+    CHECK(abs(at.ground) <= U / 8 && at.sink >= TOMB_SINK_SLOPE + mulQ12Test(TOMB_HALF_WIDTH, U / 2) - 8,
+          "on a slope: on its line, buried %.2f below it", at.sink / 4096.0);
+
+    // A thin slab (0.2) over a room: buried less than its thickness.
+    TombBox slab = {-4 * U, 4 * U, -4 * U, 4 * U, 3 * U};
+    TombMap slabMap = {&slab, 1, NULL, 0};
+    Tomb_Place(&slabMap, 0, 0, 3 * U, FEET_REACH, 0, &at);
+    CHECK(at.ground == 3 * U && at.sink < U / 5, "on a thin slab: not through it into the room below");
+
+    // A bot walking beside a curb 0.3 high, its hull overlapping it: on the floor, not the curb.
+    TombBox curbBoxes[2] = {{-8 * U, 8 * U, -8 * U, 8 * U, 0}, {U / 5, U, -4 * U, 4 * U, U * 3 / 10}};
+    TombMap curb = {curbBoxes, 2, NULL, 0};
+    Tomb_Place(&curb, 0, 0, 0, 3686, 0, &at);
+    CHECK(at.ground == 0, "beside a curb: on the floor, not lifted onto the curb");
+
+    // A bot whose waypoint line cut 0.6 into its floor still finds it.
+    Tomb_Place(&flat, 0, 0, -U * 6 / 10, 3686, 0, &at);
+    CHECK(at.ground == 0, "a bot sunk 0.6 into its floor: on the floor");
+}
+
 int main(int argc, char **argv)
 {
     const char *path = argc > 1 ? argv[1] : "Counter-Strike-nds/data/player_rig.bin";
@@ -759,6 +1196,8 @@ int main(int argc, char **argv)
     testFacing();
     testPoses();
     testRemoteLerp();
+    testTombstone();
+    testTombPlacement();
     if (g_failures)
     {
         printf("\nFAILED: %d of %d checks\n", g_failures, g_checks);

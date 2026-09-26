@@ -10,6 +10,7 @@
 #include "data/ai_data.h"
 #include "camera.h"
 #include "draw3d.h"
+#include "tombstone.h"
 
 // Maps data
 Map allMaps[MAP_COUNT];
@@ -88,6 +89,8 @@ void UnLoadMap(int mapToUnload)
  */
 void LoadMap(int mapToLoad)
 {
+    // Stones stand on the map they were placed on.
+    Tombstone_ClearAll();
     CreateWaypoints(mapToLoad);
     createLengthMatrices(mapToLoad);
 

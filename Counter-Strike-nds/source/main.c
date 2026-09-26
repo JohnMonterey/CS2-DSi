@@ -30,6 +30,7 @@
 #include "camera.h"
 #include "dsidev.h"
 #include "character_anim.h"
+#include "death_view.h"
 #include "lobby.h"
 
 //
@@ -869,11 +870,12 @@ void GameLoop()
 		float eyeOffset = (CurrentCameraPlayer == 0) ? PlayerMove_EyeOffset() : CameraOffsetY;
 		float cameraFinalY = playerWithView->position.y + eyeOffset;
 
-		// Set camera position
-		NE_CameraSet(Camera,
-					 playerWithView->position.x, cameraFinalY - deathCameraYOffset, playerWithView->position.z,
-					 playerWithView->position.x + x + xOffset, cameraFinalY + y + yOffset + deathCameraYOffset, playerWithView->position.z + z + xOffset,
-					 0, 1, 0);
+		// Set camera position; a dead local player watches its own grave from outside.
+		if (!DeathView_Update())
+			NE_CameraSet(Camera,
+						 playerWithView->position.x, cameraFinalY - deathCameraYOffset, playerWithView->position.z,
+						 playerWithView->position.x + x + xOffset, cameraFinalY + y + yOffset + deathCameraYOffset, playerWithView->position.z + z + xOffset,
+						 0, 1, 0);
 	}
 
 	reduceScreenShake();

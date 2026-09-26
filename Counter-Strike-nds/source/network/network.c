@@ -18,6 +18,7 @@
 #include "security.h"
 #include "camera.h"
 #include "dsidev.h"
+#include "tombstone.h"
 
 #include <dswifi9.h>
 #include <sys/socket.h>
@@ -709,6 +710,7 @@ void treatData()
                 {
                     AllPlayers[i].Id = UNUSED;
                     PlayerCount--;
+                    Tombstone_ClearPlayer(i);
                     // Cleared once deleted: removeAllPlayers() deletes whatever is left here, and
                     // a stale pointer can by then belong to a newer model.
                     if (AllPlayers[i].PlayerModel != NULL)

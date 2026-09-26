@@ -82,8 +82,8 @@ facing, look angle, weapon recoil, dead or alive — into a pose each frame:
   few frames.
 - **Idle:** breathing, a slow weight shift and glances, offset per character.
 - **Recoil:** the arms kick with the existing per-player recoil counter.
-- **Death:** knees give, the body falls back about its feet over 40 frames and stays there
-  until the player respawns.
+- **Death:** knees give, the body falls back about its feet over 40 frames. It then fades
+  out over a tombstone: see [fading bodies and tombstones](2026-09-26-death-fade-and-tombstones-design.md).
 
 Fixed point throughout (angles 32768 per turn, as `glRotate*i` takes them), so the host
 tests and the console compute the same poses. Sine and cosine come from a 257-entry

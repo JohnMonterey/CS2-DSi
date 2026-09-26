@@ -13,6 +13,7 @@
 #include "camera.h"
 #include "sounds.h"
 #include "draw3d.h"
+#include "tombstone.h"
 
 // Party modes data
 PartyMode allPartyModes[5];
@@ -248,6 +249,9 @@ void AddPartyMode(int index, bool MiddlePartyTeamSwap, int MaxRound, int StartMo
  */
 void onNewRoundStart()
 {
+    // A new round starts clean: the dead are back on their feet.
+    Tombstone_ClearAll();
+
     // Reset some values
     bombDropped = false;
     bombSet = false;
@@ -863,5 +867,7 @@ void prepareParty(/*bool multiplayerMode*/ int mode)
     SetCurrentCameraPlayer(0);
     DisableAim();
     resetFrameCount();
+    // The stones' ages count from frameCount, and a new match starts without any.
+    Tombstone_ClearAll();
     stopMusic();
 }

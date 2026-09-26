@@ -6,6 +6,7 @@
 // matrices.
 
 #include "character_anim.h"
+#include "tombstone_core.h"
 #include "main.h"
 #include "network.h"
 #include "dsidev.h"
@@ -100,7 +101,8 @@ void CharacterAnim_UpdatePlayers(void)
     lastUpdateFrame = frameCount;
     updatedOnce = true;
 
-    for (int i = 1; i < MaxPlayer; i++)
+    // The local player too: its body is seen when it watches its own death.
+    for (int i = 0; i < MaxPlayer; i++)
     {
         Player *player = &AllPlayers[i];
         if (player->Id == UNUSED || player->PlayerModel == NULL)
@@ -182,6 +184,30 @@ void CharacterAnim_DrawPlayer(int playerIndex)
     }
 
     const CharacterAnimState *state = &states[playerIndex];
+    if (playerIndex == 0)
+    {
+        // The local player's model holds only its position: no mesh, material or scale.
+        NE_Material *skin = player->Team == TERRORISTS ? PlayerMaterialTerrorist : PlayerMaterial;
+        CharacterRig_Draw(&poses[0], skin, model->x, model->y, model->z, state->renderYaw, 2048, 2090, 2048);
+        return;
+    }
     CharacterRig_Draw(&poses[playerIndex], model->texture, model->x, model->y, model->z, state->renderYaw,
                       model->sx, model->sy, model->sz);
+}
+
+bool CharacterAnim_Facing(int playerIndex, int32_t *yaw)
+{
+    if (!rigReady || playerIndex < 0 || playerIndex >= MaxPlayer || stateModel[playerIndex] == NULL ||
+        stateModel[playerIndex] != AllPlayers[playerIndex].PlayerModel)
+        return false;
+    *yaw = states[playerIndex].renderYaw;
+    return true;
+}
+
+int CharacterAnim_BodyAlpha(int playerIndex)
+{
+    if (!rigReady || playerIndex < 0 || playerIndex >= MaxPlayer || stateModel[playerIndex] == NULL ||
+        stateModel[playerIndex] != AllPlayers[playerIndex].PlayerModel)
+        return 31;
+    return Tomb_BodyAlpha(states[playerIndex].deathFrames);
 }

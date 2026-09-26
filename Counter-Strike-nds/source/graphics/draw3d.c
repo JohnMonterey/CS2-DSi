@@ -13,7 +13,14 @@
 #include "party.h"
 #include "player.h"
 #include "character_anim.h"
+#include "tombstone.h"
+#include "death_view.h"
 #include "lobby.h"
+
+static bool visibleFromCamera(int zone, int x, int z);
+
+// Where culling looks from (f32): the camera player's model, or the death view's camera.
+static int cullX, cullZ;
 
 int t1x = 0;
 int t1z = 0;
@@ -249,8 +256,10 @@ void Draw3DScene(void)
     // Set camera for drawing
     NE_CameraUse(Camera);
 
-    // Pose every character for this frame, visible or not, so each stays in step.
+    // Pose every character for this frame, visible or not, so each stays in step, and mark
+    // where anyone has just died.
     CharacterAnim_UpdatePlayers();
+    Tombstone_Update();
 
     // Reset polygons Alpha/Light/Effect
     NE_PolyFormat(31, 0, NE_LIGHT_0, NE_CULL_BACK, NE_MODULATION);
@@ -260,11 +269,17 @@ void Draw3DScene(void)
     // render 3D if map insn't at screen
     if (!isShowingMap)
     {
+        // Culling looks from the camera player, unless the local player is watching its own
+        // death from outside.
+        cullX = AllPlayers[CurrentCameraPlayer].PlayerModel->x;
+        cullZ = AllPlayers[CurrentCameraPlayer].PlayerModel->z;
+        DeathView_CullOrigin(&cullX, &cullZ);
+
         // Field of view end coordinates
-        t1x = (xWithoutYForOcclusionSide1 * 500 + AllPlayers[CurrentCameraPlayer].position.x) * 8192.0;
-        t1z = (zWithoutYForOcclusionSide1 * 500 + AllPlayers[CurrentCameraPlayer].position.z) * 8192.0;
-        t2x = (xWithoutYForOcclusionSide2 * 500 + AllPlayers[CurrentCameraPlayer].position.x) * 8192.0;
-        t2z = (zWithoutYForOcclusionSide2 * 500 + AllPlayers[CurrentCameraPlayer].position.z) * 8192.0;
+        t1x = (xWithoutYForOcclusionSide1 * 500 + cullX / 4096.0) * 8192.0;
+        t1z = (zWithoutYForOcclusionSide1 * 500 + cullZ / 4096.0) * 8192.0;
+        t2x = (xWithoutYForOcclusionSide2 * 500 + cullX / 4096.0) * 8192.0;
+        t2z = (zWithoutYForOcclusionSide2 * 500 + cullZ / 4096.0) * 8192.0;
 
         // Draw map
         for (int i = 0; i < map->AllZones[AllPlayers[CurrentCameraPlayer].CurrentOcclusionZone].ZoneCount; i++)
@@ -272,14 +287,14 @@ void Draw3DScene(void)
             bool inFov = false; // Is the map part in the field of view of the player?
 
             // Force to render the map part where the player is
-            if (checkZoneForOcclusion(&map->AllOcclusionZone[map->AllZones[AllPlayers[CurrentCameraPlayer].CurrentOcclusionZone].visibleMapPart[i]], AllPlayers[CurrentCameraPlayer].PlayerModel->x, AllPlayers[CurrentCameraPlayer].PlayerModel->z))
+            if (checkZoneForOcclusion(&map->AllOcclusionZone[map->AllZones[AllPlayers[CurrentCameraPlayer].CurrentOcclusionZone].visibleMapPart[i]], cullX, cullZ))
                 inFov = true;
             else
             {
                 // Check if the map part is in the field of view of the player
                 for (int i2 = 0; i2 < 4; i2++)
                 {
-                    if (PointInTriangleInt(map->AllOcclusionZone[map->AllZones[AllPlayers[CurrentCameraPlayer].CurrentOcclusionZone].visibleMapPart[i]].anglesInt[i2].x, map->AllOcclusionZone[map->AllZones[AllPlayers[CurrentCameraPlayer].CurrentOcclusionZone].visibleMapPart[i]].anglesInt[i2].y, AllPlayers[CurrentCameraPlayer].PlayerModel->x, AllPlayers[CurrentCameraPlayer].PlayerModel->z, t1x, t1z, t2x, t2z))
+                    if (PointInTriangleInt(map->AllOcclusionZone[map->AllZones[AllPlayers[CurrentCameraPlayer].CurrentOcclusionZone].visibleMapPart[i]].anglesInt[i2].x, map->AllOcclusionZone[map->AllZones[AllPlayers[CurrentCameraPlayer].CurrentOcclusionZone].visibleMapPart[i]].anglesInt[i2].y, cullX, cullZ, t1x, t1z, t2x, t2z))
                     {
                         inFov = true;
                         break;
@@ -382,11 +397,28 @@ void Draw3DScene(void)
             NE_ModelDraw(Model[10]);
         }
 
+        Tombstone_DrawAll(visibleFromCamera);
         DrawPlayers();
     }
 
     // Draw UI
     drawTopScreenUI();
+}
+
+/**
+ * @brief Whether something in map zone `zone` at (x, z) (f32) is worth drawing: the camera
+ * stands in a map part visible from that zone, and the point is in the view wedge
+ *
+ */
+static bool visibleFromCamera(int zone, int x, int z)
+{
+    Map *map = &allMaps[currentMap];
+    for (int i = 0; i < map->AllZones[zone].ZoneCount; i++)
+    {
+        if (checkZoneForOcclusion(&map->AllOcclusionZone[map->AllZones[zone].visibleMapPart[i]], cullX, cullZ))
+            return PointInTriangleInt(x, z, cullX, cullZ, t1x, t1z, t2x, t2z);
+    }
+    return false;
 }
 
 /**
@@ -400,43 +432,66 @@ void DrawPlayers()
     // menu interaction -- and every kill and network event, which also queue 8 -- made
     // the players vanish for about an eighth of a second.
 
-    Map *map = &allMaps[currentMap];
-
-    // for each players
-    for (int playerIndex = 1; playerIndex < MaxPlayer; playerIndex++)
+    // for each players. The local player's body is seen only once it is dead: in its own
+    // death view, or from the eyes of whoever it spectates. Fading bodies are translucent, and
+    // the hardware draws translucent polygons in the order they arrive, without depth among
+    // themselves: they go after the rest, farthest first.
+    bool deathView = DeathView_Active();
+    bool localBody = deathView || (localPlayer->IsDead && CurrentCameraPlayer != 0);
+    int fading[MaxPlayer], fadingCount = 0;
+    int64_t fadingDistance[MaxPlayer];
+    for (int playerIndex = localBody ? 0 : 1; playerIndex < MaxPlayer; playerIndex++)
     {
         Player *player = &AllPlayers[playerIndex];
-        // Check if he is in game and if the camera is not on this player. The dead stay
-        // where they fell, as bodies, until they respawn; that needs the animated rig.
+        // Check if he is in game and if the camera is not on this player. The dead fall,
+        // then fade out over a tombstone; that needs the animated rig.
         bool drawnDead = AllPlayers[playerIndex].IsDead && CharacterAnim_Ready();
-        if (AllPlayers[playerIndex].Id != UNUSED && (!AllPlayers[playerIndex].IsDead || drawnDead) &&
-            AllPlayers[playerIndex].PlayerModel != NULL && CurrentCameraPlayer != playerIndex)
+        bool looking = CurrentCameraPlayer != playerIndex || (playerIndex == 0 && deathView);
+        if (AllPlayers[playerIndex].Id == UNUSED || (AllPlayers[playerIndex].IsDead && !drawnDead) ||
+            AllPlayers[playerIndex].PlayerModel == NULL || !looking ||
+            !visibleFromCamera(player->CurrentOcclusionZone, player->PlayerModel->x, player->PlayerModel->z))
+            continue;
+
+        // A body that has faded away is not drawn at all (alpha 0 would draw it as wireframe).
+        int alpha = drawnDead ? CharacterAnim_BodyAlpha(playerIndex) : 31;
+        if (alpha == 0)
+            continue;
+        if (alpha < 31)
         {
-            for (int i3 = 0; i3 < allMaps[currentMap].AllZones[AllPlayers[playerIndex].CurrentOcclusionZone].ZoneCount; i3++)
+            int64_t dx = player->PlayerModel->x - cullX, dz = player->PlayerModel->z - cullZ;
+            int n = fadingCount++;
+            // Insertion sort, farthest first.
+            while (n > 0 && fadingDistance[n - 1] < dx * dx + dz * dz)
             {
-                // If the player is in a visible map part
-                if (checkZoneForOcclusion(&map->AllOcclusionZone[allMaps[currentMap].AllZones[AllPlayers[playerIndex].CurrentOcclusionZone].visibleMapPart[i3]], AllPlayers[CurrentCameraPlayer].PlayerModel->x, AllPlayers[CurrentCameraPlayer].PlayerModel->z))
-                {
-                    // Get if the player is in the field of view of the camera
-                    bool inFov = PointInTriangleInt(AllPlayers[playerIndex].PlayerModel->x, AllPlayers[playerIndex].PlayerModel->z, AllPlayers[CurrentCameraPlayer].PlayerModel->x, AllPlayers[CurrentCameraPlayer].PlayerModel->z, t1x, t1z, t2x, t2z);
-
-                    if (inFov)
-                    {
-                        NE_PolyFormat(31, 0, NE_LIGHT_0, NE_CULL_BACK, NE_MODULATION);
-                        // Draw player's skin
-                        CharacterAnim_DrawPlayer(playerIndex);
-
-                        // Draw player's shadow
-                        if (!drawnDead && (player->isAi || fabs(player->position.y - player->lerpDestination.y) < 0.05))
-                        {
-                            NE_PolyFormat(15, 0, NE_LIGHT_0, NE_CULL_BACK, NE_MODULATION);
-                            NE_ModelDraw(AllPlayers[playerIndex].PlayerShadow);
-                        }
-                    }
-                    break;
-                }
+                fading[n] = fading[n - 1];
+                fadingDistance[n] = fadingDistance[n - 1];
+                n--;
             }
+            fading[n] = playerIndex;
+            fadingDistance[n] = dx * dx + dz * dz;
+            continue;
         }
+
+        NE_PolyFormat(31, 0, NE_LIGHT_0, NE_CULL_BACK, NE_MODULATION);
+        // Draw player's skin
+        CharacterAnim_DrawPlayer(playerIndex);
+
+        // Draw player's shadow
+        if (!drawnDead && (player->isAi || fabs(player->position.y - player->lerpDestination.y) < 0.05))
+        {
+            NE_PolyFormat(15, 0, NE_LIGHT_0, NE_CULL_BACK, NE_MODULATION);
+            NE_ModelDraw(AllPlayers[playerIndex].PlayerShadow);
+        }
+    }
+
+    // Each fading body has a polygon ID of its own: a translucent pixel is not drawn over
+    // another left by the same ID.
+    for (int i = 0; i < fadingCount; i++)
+    {
+        int playerIndex = fading[i];
+        NE_PolyFormat(CharacterAnim_BodyAlpha(playerIndex), BODY_FADE_POLY_ID + playerIndex, NE_LIGHT_0, NE_CULL_BACK,
+                      NE_MODULATION);
+        CharacterAnim_DrawPlayer(playerIndex);
     }
 }
 

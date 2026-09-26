@@ -16,6 +16,7 @@
 #include "stats.h"
 #include "network.h"
 #include "character_anim.h"
+#include "tombstone.h"
 
 /**
  * @brief Kill a player
@@ -25,6 +26,10 @@
 void killPlayer(Player *player)
 {
     player->Health = 0;
+    // Online, a repeated death message kills the dead again: only the first one leaves a
+    // tombstone.
+    if (!player->IsDead)
+        Tombstone_NoteDeath(player - AllPlayers);
     // Set client has dead
     player->IsDead = true;
     if (player == localPlayer && (currentMenu == SHOP || currentMenu == SHOPCATEGORIES))
@@ -691,9 +696,12 @@ int AddNewPlayer(int NewId, bool IsLocalPlayer, bool isAI)
             player->leftGunXRecoil = GunMinRecoil;
             player->leftGunYRecoil = GunMinRecoil;
 
+            // A new player in the slot: none of the last one's motion or tombstone.
+            Tombstone_ClearPlayer(i);
             if (IsLocalPlayer)
             {
                 player->PlayerModel = NE_ModelCreate(NE_Static);
+                CharacterAnim_ResetPlayer(i);
                 player->PlayerPhysic = NE_PhysicsCreate(NE_BoundingBox);
                 NE_PhysicsSetModel(player->PlayerPhysic, (void *)player->PlayerModel); // Physics object and Model assigned to it
                 NE_PhysicsEnable(player->PlayerPhysic, IsLocalPlayer);

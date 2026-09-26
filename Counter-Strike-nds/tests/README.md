@@ -33,4 +33,6 @@ emulator. Record frame time and heap usage in these scenes to quantify gains.
 Characters no longer use Nitro Engine's keyframe animation (`NE_ModelAnimateAll()`).
 `source/player/character_anim.c` poses every player, visible or not, once per drawn
 frame, so culling a model never changes its animation timing. The pose code and the
-rig file it reads are covered by `make test-anim` (`tests/anim/test_anim.c`).
+rig file it reads are covered by `make test-anim` (`tests/anim/test_anim.c`), as are the
+tombstones the dead leave (`source/player/tombstone_core.c`): their mesh, the timing of the
+body's fade and the stone's rise, and where the ground is under a death.
