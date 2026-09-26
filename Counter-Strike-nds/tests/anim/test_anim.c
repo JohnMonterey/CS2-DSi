@@ -886,8 +886,8 @@ static void testTombMesh(bool ct)
             double x = p->v[k].x / 4096.0, y = p->v[k].y / 4096.0;
             double w = TOMB_HALF_WIDTH / 4096.0, h = TOMB_SHOULDER / 4096.0;
             bool onFace = fabs(x) < w - 0.02 && y > 0.1 && y <= h - 0.02;
-            // Clear of the face by at least 0.04: the depth buffer tells that apart to ~10 units.
-            if (p->v[k].z > -TOMB_HALF_THICKNESS - 164 || p->v[k].z < -TOMB_HALF_THICKNESS - 410 || !onFace)
+            // Raised 0.02 to 0.05 off the face.
+            if (p->v[k].z > -TOMB_HALF_THICKNESS - 82 || p->v[k].z < -TOMB_HALF_THICKNESS - 205 || !onFace)
                 stray++;
             minX[l] = fmin(minX[l], x);
             maxX[l] = fmax(maxX[l], x);
@@ -898,6 +898,21 @@ static void testTombMesh(bool ct)
     }
     CHECK(stray == 0, "%s stone: the engraving lies on the front, below the round top (%d vertices elsewhere)", name,
           stray);
+
+    // Raised enough for the depth buffer to keep it in front of the face out to 7 units (a
+    // step is about 3.05e-4 * d^2 there), and little enough that from 60 degrees to the side
+    // its outer stroke still lies within the stone's edge.
+    double lift = 0, outer = 0;
+    for (int i = 0; i < mesh.count; i++)
+        for (int k = 0; k < mesh.polygons[i].count; k++)
+            if (mesh.polygons[i].letter)
+            {
+                lift = (-TOMB_HALF_THICKNESS - mesh.polygons[i].v[k].z) / 4096.0;
+                outer = fmax(outer, fabs(mesh.polygons[i].v[k].x / 4096.0));
+            }
+    CHECK(lift >= 1.5 * 3.05e-4 * 7 * 7, "%s stone: the engraving keeps its depth to 7 units (raised %.3f)", name, lift);
+    CHECK((TOMB_HALF_WIDTH / 4096.0 - outer) / lift >= tan(60 * TURN_RAD / 360),
+          "%s stone: from 60 degrees aside it stays inside the stone's edge", name);
     if (ct)
     {
         // C (three bars) then T (two); the C to the reader's left, its upright bar at its left.

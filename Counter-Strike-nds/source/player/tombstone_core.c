@@ -10,10 +10,11 @@
 #include <string.h>
 
 // The engraving: raised block letters on the front face, below the round top. They stand
-// clear of the face by more than the depth buffer can tell apart out to about 10 units (a
-// step there is about 3e-4 * d^2 units with the game's projection); further off they are a
-// couple of pixels high. An equal depth test in the face's plane does not work: the large
-// face and the small letters do not interpolate depth closely enough.
+// clear of the face by what the depth buffer tells apart to about 7 units (a step there is
+// about 3e-4 * d^2 units with the game's projection), past which they are a few pixels high
+// anyway; any higher and, seen from the side, the outer stroke would stand out past the
+// stone's edge. An equal depth test in the face's plane does not work: the large face and
+// the small letters do not interpolate depth closely enough.
 // At 0.28 high with a 0.075 stroke they read to about 9 units off.
 #define LETTER_HEIGHT 1147 // 0.28
 #define LETTER_STROKE 307  // 0.075
@@ -21,7 +22,7 @@
 #define LETTER_T_WIDTH 819 // 0.20
 #define LETTER_GAP 184     // 0.045
 #define LETTER_BOTTOM 1188 // 0.29, so the top is at 0.57
-#define LETTER_LIFT 205    // 0.05
+#define LETTER_LIFT 123    // 0.03
 
 // How far below its resting place a stone buried `sink` deep starts: its top at its bottom.
 #define RISE_DEPTH(sink) (TOMB_TOP + (sink))

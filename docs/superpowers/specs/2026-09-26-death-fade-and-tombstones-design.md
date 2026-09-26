@@ -35,13 +35,15 @@
 A slab 0.54 wide, 0.14 thick and 0.89 tall above the ground (the player's hull is 1.8), with
 a round top of 6 segments. 17 polygons, closed, every face wound counter-clockwise from
 outside like the rig's so back faces cull; the engraving is 5 quads (CT) or 2 (T), raised
-0.05 off the face. Unlit, untextured, vertex-coloured: a cool gray, darker toward the ground,
+0.03 off the face. Unlit, untextured, vertex-coloured: a cool gray, darker toward the ground,
 and 30% darker in the map's shadow zones, as the game darkens the gun there.
 
-The letters stand 0.05 off the face because the depth buffer cannot tell 0.015 apart past
-about 7 units (a step is about 3e-4 * d^2 with the game's projection). The equal depth test
-in the face's plane was tried and does not work: the large face and the small letters do not
-interpolate depth closely enough, and the letters break up.
+The letters stand 0.03 off the face: enough for the depth buffer to keep them in front out
+to about 7 units (a step is about 3e-4 * d^2 with the game's projection), past which they are
+a few pixels high; and little enough that seen from 60 degrees aside their outer stroke stays
+inside the stone's edge (at 0.05 it stood out past it). The equal depth test in the face's
+plane was tried and does not work: the large face and the small letters do not interpolate
+depth closely enough, and the letters break up.
 
 ## Where it stands
 
@@ -96,9 +98,10 @@ Placement and ground are computed once, at the death.
 
 ## Testing
 
-- `make test-anim` (186 checks), new here:
+- `make test-anim` (190 checks), new here:
   - the mesh is closed, every edge shared once each way, and every face is wound outward;
-  - the engraving is raised on the face, below the round top, and reads CT left to right;
+  - the engraving is raised on the face, below the round top, reads CT left to right, keeps
+    its depth to 7 units, and stays inside the stone's edge seen from 60 degrees aside;
   - it faces the player's last facing;
   - the body stays solid through the fall, fades, stays drawable until gone, and is gone
     before a 2 s respawn;
