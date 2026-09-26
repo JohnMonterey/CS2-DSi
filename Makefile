@@ -37,7 +37,7 @@ help:
 	@echo '  make update-loader-dsi replace the loader on the card over Wi-Fi'
 	@echo '  make doctor-dsi       report on the local devkitPro installation'
 	@echo '  make test-movement    host tests for the CS:GO movement core'
-	@echo '  make test-anim        host tests for character animation and the player rig'
+	@echo '  make test-anim        host tests for character animation, the rig and online smoothing'
 	@echo 'Multiplayer:'
 	@echo '  make serve            run a multiplayer server on this machine'
 	@echo '  make test-server      protocol tests for the server'
@@ -101,16 +101,17 @@ test-movement:
 	      -I Counter-Strike-nds/source/player \
 	      -o $(MOVEMENT_TEST_BIN) $(MOVEMENT_TEST_SRC)
 	$(MOVEMENT_TEST_BIN) Counter-Strike-nds/movement.cfg
-# Host tests for the character animation core: the rig file the game embeds, and the poses
-# the console will draw from it.
+# Host tests for the character animation core: the rig file the game embeds, the poses the
+# console will draw from it, and how online players move between position snapshots.
 # Regenerate the rig with tools/assets/player_rig.py.
 ANIM_TEST_BIN := Counter-Strike-nds/tests/anim/.build/test_anim
 ANIM_TEST_SRC := Counter-Strike-nds/tests/anim/test_anim.c \
-                 Counter-Strike-nds/source/player/character_anim_core.c
+                 Counter-Strike-nds/source/player/character_anim_core.c \
+                 Counter-Strike-nds/source/network/remote_lerp.c
 test-anim:
 	@mkdir -p $(dir $(ANIM_TEST_BIN))
 	$(CC) -std=gnu17 -Wall -Wextra -Werror -O2 \
-	      -I Counter-Strike-nds/source/player \
+	      -I Counter-Strike-nds/source/player -I Counter-Strike-nds/source/network \
 	      -o $(ANIM_TEST_BIN) $(ANIM_TEST_SRC) -lm
 	$(ANIM_TEST_BIN) Counter-Strike-nds/data/player_rig.bin
 clean-dsi:

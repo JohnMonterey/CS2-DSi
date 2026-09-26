@@ -8,6 +8,7 @@
 // Build and run:  make test-anim
 
 #include "character_anim_core.h"
+#include "remote_lerp.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -517,6 +518,127 @@ static void testPoses(void)
     CHECK(worstJump < ANIM_DEG(1), "the idle is smooth (worst %.2f deg per frame)", toDegrees(worstJump));
 }
 
+/* ---------------------------------------------------------------------- *
+ * Online players between snapshots
+ * ---------------------------------------------------------------------- */
+
+static void testRemoteLerp(void)
+{
+    section("online players between snapshots");
+
+    // A player running straight at 5 units/s, relayed every 6 frames (10 Hz).
+    RemoteLerp lerp;
+    memset(&lerp, 0, sizeof(lerp));
+    float drawn[3] = {0, 0, 0};
+    float snapshot[3] = {0, 0, 0};
+    RemoteLerp_Snap(&lerp, snapshot, 0);
+    const float perFrame = 5.0f / 60.0f;
+    float lastX = 0, minStep = 1e9f, maxStep = 0, worstJump = 0;
+    bool backwards = false, overshot = false;
+    for (int frame = 1; frame <= 240; frame++)
+    {
+        if (frame % 6 == 0)
+        {
+            snapshot[0] = frame * perFrame;
+            float before[3];
+            RemoteLerp_Sample(&lerp, frame, before);
+            RemoteLerp_Push(&lerp, drawn, snapshot, frame);
+            float after[3];
+            RemoteLerp_Sample(&lerp, frame, after);
+            // Where the old segment and the new one put the player this frame.
+            float jump = fabsf(after[0] - before[0]);
+            if (frame > 30 && jump > worstJump)
+                worstJump = jump;
+        }
+        RemoteLerp_Sample(&lerp, frame, drawn);
+        float step = drawn[0] - lastX;
+        backwards |= step < -1e-6f;
+        overshot |= drawn[0] > snapshot[0] + 1e-4f;
+        if (frame > 30)
+        {
+            if (step < minStep)
+                minStep = step;
+            if (step > maxStep)
+                maxStep = step;
+        }
+        lastX = drawn[0];
+    }
+    CHECK(worstJump < perFrame / 4, "a new snapshot never jumps the player (worst %.4f units)", worstJump);
+    CHECK(!backwards && !overshot, "steady running never goes backwards or past the snapshot");
+    CHECK(minStep > perFrame * 0.8f && maxStep < perFrame * 1.2f,
+          "steady running is drawn at a steady pace (%.4f..%.4f units a frame, want about %.4f)", minStep,
+          maxStep, perFrame);
+    // Just after a snapshot the player is drawn one relay interval (6 frames) plus the frame of
+    // slack behind it.
+    CHECK(snapshot[0] - drawn[0] < perFrame * 8, "and about one snapshot behind (%.3f units)", snapshot[0] - drawn[0]);
+
+    // The relay's own rhythm: snapshots 6 and 8 frames apart in turn. The player must not
+    // stop and start between them.
+    memset(&lerp, 0, sizeof(lerp));
+    snapshot[0] = drawn[0] = 0;
+    RemoteLerp_Snap(&lerp, snapshot, 0);
+    lastX = 0;
+    int stalls = 0;
+    for (int frame = 1, next = 6, k = 0; frame <= 300; frame++)
+    {
+        if (frame == next)
+        {
+            snapshot[0] = frame * perFrame;
+            RemoteLerp_Push(&lerp, drawn, snapshot, frame);
+            next += (k++ & 1) ? 8 : 6;
+        }
+        RemoteLerp_Sample(&lerp, frame, drawn);
+        if (frame > 30 && drawn[0] - lastX < perFrame * 0.25f)
+            stalls++;
+        lastX = drawn[0];
+    }
+    CHECK(stalls == 0, "snapshots 6 and 8 frames apart in turn never stall the player (%d stalls)", stalls);
+
+    // Irregular packets (4 to 9 frames apart): still never backwards, never past the target.
+    memset(&lerp, 0, sizeof(lerp));
+    snapshot[0] = drawn[0] = 0;
+    RemoteLerp_Snap(&lerp, snapshot, 0);
+    backwards = overshot = false;
+    int next = 5, gapIndex = 0;
+    static const int gaps[] = {4, 9, 6, 5, 8, 6, 4, 7};
+    lastX = 0;
+    for (int frame = 1; frame <= 300; frame++)
+    {
+        if (frame == next)
+        {
+            snapshot[0] = frame * perFrame;
+            RemoteLerp_Push(&lerp, drawn, snapshot, frame);
+            next += gaps[gapIndex++ % 8];
+        }
+        RemoteLerp_Sample(&lerp, frame, drawn);
+        backwards |= drawn[0] < lastX - 1e-6f;
+        overshot |= drawn[0] > snapshot[0] + 1e-4f;
+        lastX = drawn[0];
+    }
+    CHECK(!backwards && !overshot, "irregular snapshots never go backwards or past the target");
+
+    // The frame counter is reset at the start of a match: a segment from before counts as done.
+    RemoteLerp_Push(&lerp, drawn, (float[3]){50, 1, 2}, 1000);
+    float out[3];
+    RemoteLerp_Sample(&lerp, 3, out);
+    CHECK(out[0] == 50 && out[1] == 1 && out[2] == 2, "a counter reset lands on the snapshot");
+
+    // A long pause (no packets while standing) does not make the next move crawl.
+    memset(&lerp, 0, sizeof(lerp));
+    RemoteLerp_Snap(&lerp, (float[3]){0, 0, 0}, 0);
+    RemoteLerp_Push(&lerp, (float[3]){0, 0, 0}, (float[3]){0.5f, 0, 0}, 6);
+    RemoteLerp_Push(&lerp, (float[3]){0.5f, 0, 0}, (float[3]){0.5f, 0, 0}, 12);
+    RemoteLerp_Push(&lerp, (float[3]){0.5f, 0, 0}, (float[3]){1.0f, 0, 0}, 400);
+    CHECK(lerp.duration == REMOTE_LERP_FIRST_FRAMES, "after a pause the pace is the usual one (%d frames)", lerp.duration);
+
+    // Knowing when the game moved the destination itself.
+    CHECK(RemoteLerp_Targets(&lerp, (float[3]){1.0f, 0, 0}), "the latest snapshot is the target");
+    CHECK(!RemoteLerp_Targets(&lerp, (float[3]){7, 0, 0}), "a destination set elsewhere is noticed");
+    RemoteLerp_Snap(&lerp, (float[3]){7, 0, 0}, 401);
+    RemoteLerp_Sample(&lerp, 401, out);
+    CHECK(out[0] == 7 && RemoteLerp_Targets(&lerp, (float[3]){7, 0, 0}), "a snap lands at once");
+}
+
 int main(int argc, char **argv)
 {
     const char *path = argc > 1 ? argv[1] : "Counter-Strike-nds/data/player_rig.bin";
@@ -531,6 +653,7 @@ int main(int argc, char **argv)
     testFrameRate();
     testFacing();
     testPoses();
+    testRemoteLerp();
     if (g_failures)
     {
         printf("\nFAILED: %d of %d checks\n", g_failures, g_checks);

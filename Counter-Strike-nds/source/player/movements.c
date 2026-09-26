@@ -309,18 +309,21 @@ void SetOnlinelPlayersPositions()
         {
             float Speed = 0.1;
             float Dis = fabs(player->position.x - player->lerpDestination.x) + fabs(player->position.y - player->lerpDestination.y) + fabs(player->position.z - player->lerpDestination.z);
+            float destination[3] = {player->lerpDestination.x, player->lerpDestination.y, player->lerpDestination.z};
+
+            // Spawns and resets move the destination directly, without a snapshot: go there.
+            if (!RemoteLerp_Targets(&player->remoteLerp, destination))
+                RemoteLerp_Snap(&player->remoteLerp, destination, frameCount);
 
             if (Dis < 4.0)
             {
-                // Smoothing player position
-                if (player->position.x != player->lerpDestination.x)                                                    // If player x position is not the same as x destination
-                    player->position.x = player->position.x + Speed * (player->lerpDestination.x - player->position.x); // Move player with lerp system
-
-                if (player->position.y != player->lerpDestination.y)                                                    // If player y position is not the same as y destination
-                    player->position.y = player->position.y + Speed * (player->lerpDestination.y - player->position.y); // Move player with lerp system
-
-                if (player->position.z != player->lerpDestination.z)                                                    // If player y position is not the same as z destination
-                    player->position.z = player->position.z + Speed * (player->lerpDestination.z - player->position.z); // Move player with lerp system
+                // Glide at a steady pace toward the latest snapshot (remote_lerp.h) rather than
+                // closing a tenth of the distance each tick, which lagged and surged.
+                float drawn[3];
+                RemoteLerp_Sample(&player->remoteLerp, frameCount, drawn);
+                player->position.x = drawn[0];
+                player->position.y = drawn[1];
+                player->position.z = drawn[2];
 
                 if (abs(player->AngleDestination - player->Angle) > 90)
                 {
@@ -341,6 +344,7 @@ void SetOnlinelPlayersPositions()
                 player->position.x = player->lerpDestination.x;
                 player->position.y = player->lerpDestination.y;
                 player->position.z = player->lerpDestination.z;
+                RemoteLerp_Snap(&player->remoteLerp, destination, frameCount);
 
                 player->Angle = player->AngleDestination;
             }

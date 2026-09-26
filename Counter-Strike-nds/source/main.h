@@ -72,6 +72,7 @@ static inline double squareDouble(double value) { return value * value; }
 #include "grenade_bin.h"
 
 #include "obj_PlayerStatic_bin.h"
+#include "remote_lerp.h"
 
 // Terrain textures
 #include "texMap_Dust2_bin.h"
@@ -350,6 +351,8 @@ typedef struct // Player values
 
 	Vector3 position;
 	Vector3 lerpDestination;
+	// Online players only: the path drawn from position to lerpDestination (remote_lerp.h)
+	RemoteLerp remoteLerp;
 	float cameraAngle;
 	float Angle;
 	float AngleDestination;

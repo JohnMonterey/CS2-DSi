@@ -284,12 +284,20 @@ void treatData()
                     if (AllPlayers[i].Id == PlayerIdInt)
                     {
                         // If player has no position, teleport the player to new updated position (0 default position)
+                        float snapshot[3] = {XFloat, YFloat, ZFloat};
                         if (AllPlayers[i].lerpDestination.x == 0)
                         {
                             AllPlayers[i].position.x = XFloat;
                             AllPlayers[i].position.y = YFloat;
                             AllPlayers[i].position.z = ZFloat;
                             AllPlayers[i].Angle = AngleInt;
+                            RemoteLerp_Snap(&AllPlayers[i].remoteLerp, snapshot, frameCount);
+                        }
+                        else
+                        {
+                            // Glide from where the player is drawn now to the snapshot.
+                            float drawn[3] = {AllPlayers[i].position.x, AllPlayers[i].position.y, AllPlayers[i].position.z};
+                            RemoteLerp_Push(&AllPlayers[i].remoteLerp, drawn, snapshot, frameCount);
                         }
 
                         // Set player destination
@@ -701,10 +709,16 @@ void treatData()
                 {
                     AllPlayers[i].Id = UNUSED;
                     PlayerCount--;
-                    NE_ModelDelete(AllPlayers[i].PlayerModel);
+                    // Cleared once deleted: removeAllPlayers() deletes whatever is left here, and
+                    // a stale pointer can by then belong to a newer model.
+                    if (AllPlayers[i].PlayerModel != NULL)
+                        NE_ModelDelete(AllPlayers[i].PlayerModel);
+                    AllPlayers[i].PlayerModel = NULL;
                     if (i == 0)
                     {
-                        NE_PhysicsDelete(AllPlayers[i].PlayerPhysic);
+                        if (AllPlayers[i].PlayerPhysic != NULL)
+                            NE_PhysicsDelete(AllPlayers[i].PlayerPhysic);
+                        AllPlayers[i].PlayerPhysic = NULL;
                     }
                     else
                     {
