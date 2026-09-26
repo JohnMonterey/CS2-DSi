@@ -15,8 +15,7 @@
 #include "sounds.h"
 #include "stats.h"
 #include "network.h"
-
-bool PlayerAnim = false;
+#include "character_anim.h"
 
 /**
  * @brief Kill a player
@@ -723,27 +722,15 @@ int AddNewPlayer(int NewId, bool IsLocalPlayer, bool isAI)
             }
             else
             {
-                if(PlayerAnim)
-                {
-                    player->PlayerModel = NE_ModelCreate(NE_Animated); // ANIMATED VERSION
-                    NE_ModelAnimInterpolate(player->PlayerModel, false);
-                    NE_ModelAnimStart(player->PlayerModel, 0, 0, 3, NE_ANIM_LOOP, 5);
-                }
-                else
-                player->PlayerModel = NE_ModelCreate(NE_Static); // STATIC VERSION
-
-                if (i == 1)
-                    if(PlayerAnim)
-                    NE_ModelLoadNEA(player->PlayerModel, (u32 *)obj_PlayerAnim_bin);
-                    else
-                    NE_ModelLoadStaticMesh(player->PlayerModel, (u32 *)obj_PlayerStatic_bin);
-                else
-                    NE_ModelClone(player->PlayerModel,        // Destination
-                                  AllPlayers[1].PlayerModel); // Source model
-
+                // The model holds the player's position and material, and is what gets drawn
+                // if the animated rig is unavailable (see character_anim.c). A static mesh is
+                // only a pointer to shared data, so every player loads it directly rather
+                // than cloning slot 1, which an online player leaving can have emptied.
+                player->PlayerModel = NE_ModelCreate(NE_Static);
+                NE_ModelLoadStaticMesh(player->PlayerModel, (u32 *)obj_PlayerStatic_bin);
                 NE_ModelSetMaterial(player->PlayerModel, PlayerMaterial);
-                NE_ModelScaleI(player->PlayerModel, 2048, 2090, 2048); // 2048 <- 4096 * 0.5 ANIMATED VERSION
-                // NE_ModelScaleI(player->PlayerModel, 700, 700, 700); // 2048 <- 4096 * 0.5 STATIC VERSION
+                NE_ModelScaleI(player->PlayerModel, 2048, 2090, 2048); // about 0.5
+                CharacterAnim_ResetPlayer(i);
 
                 // Select a random name
                 if (isAI)

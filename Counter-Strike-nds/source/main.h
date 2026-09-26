@@ -71,7 +71,6 @@ static inline double squareDouble(double value) { return value * value; }
 #include "smokeSphere_bin.h"
 #include "grenade_bin.h"
 
-#include "obj_PlayerAnim_bin.h"
 #include "obj_PlayerStatic_bin.h"
 
 // Terrain textures

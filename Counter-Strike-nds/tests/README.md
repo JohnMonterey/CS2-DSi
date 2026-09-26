@@ -30,6 +30,7 @@ repeated map/match changes, ten-player offline matches, shotgun bursts, grenades
 spectating, minimap use, and multiplayer packet handling on DS hardware or an
 emulator. Record frame time and heap usage in these scenes to quantify gains.
 
-Global animation advancement remains enabled: the referenced Nitro Engine's
-`NE_ModelAnimateAll()` advances animation clocks, while mesh processing occurs
-during drawing. Skipping hidden models would change animation timing.
+Characters no longer use Nitro Engine's keyframe animation (`NE_ModelAnimateAll()`).
+`source/player/character_anim.c` poses every player, visible or not, once per drawn
+frame, so culling a model never changes its animation timing. The pose code and the
+rig file it reads are covered by `make test-anim` (`tests/anim/test_anim.c`).

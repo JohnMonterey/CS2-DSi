@@ -20,7 +20,7 @@ DSI_DATA_FLAGS = $(foreach file,$(DSI_DATA),--data $(file))
 
 .PHONY: help setup-dsi doctor-dsi loader-dsi stage-dsi sample-dsi run-dsi run-dsi-sample \
         discover-dsi logs-dsi reset-dsi asset-dsi put-dsi update-loader-dsi test-dsi \
-        test-movement serve test-server gamedata clean-dsi
+        test-movement test-anim serve test-server gamedata clean-dsi
 help:
 	@echo 'One-time setup:'
 	@echo '  make setup-dsi        check the toolchain, build the loader, stage dsidev.nds'
@@ -37,6 +37,7 @@ help:
 	@echo '  make update-loader-dsi replace the loader on the card over Wi-Fi'
 	@echo '  make doctor-dsi       report on the local devkitPro installation'
 	@echo '  make test-movement    host tests for the CS:GO movement core'
+	@echo '  make test-anim        host tests for character animation and the player rig'
 	@echo 'Multiplayer:'
 	@echo '  make serve            run a multiplayer server on this machine'
 	@echo '  make test-server      protocol tests for the server'
@@ -100,7 +101,19 @@ test-movement:
 	      -I Counter-Strike-nds/source/player \
 	      -o $(MOVEMENT_TEST_BIN) $(MOVEMENT_TEST_SRC)
 	$(MOVEMENT_TEST_BIN) Counter-Strike-nds/movement.cfg
+# Host tests for the character animation core: the rig file the game embeds, and the poses
+# the console will draw from it.
+# Regenerate the rig with tools/assets/player_rig.py.
+ANIM_TEST_BIN := Counter-Strike-nds/tests/anim/.build/test_anim
+ANIM_TEST_SRC := Counter-Strike-nds/tests/anim/test_anim.c \
+                 Counter-Strike-nds/source/player/character_anim_core.c
+test-anim:
+	@mkdir -p $(dir $(ANIM_TEST_BIN))
+	$(CC) -std=gnu17 -Wall -Wextra -Werror -O2 \
+	      -I Counter-Strike-nds/source/player \
+	      -o $(ANIM_TEST_BIN) $(ANIM_TEST_SRC) -lm
+	$(ANIM_TEST_BIN) Counter-Strike-nds/data/player_rig.bin
 clean-dsi:
 	$(MAKE) -C tools/dsi clean
 	$(RM) -r tools/dsi/.build/tests tools/dsi/.build/sd Counter-Strike-nds/build-dsidev \
-	         Counter-Strike-nds/tests/movement/.build
+	         Counter-Strike-nds/tests/movement/.build Counter-Strike-nds/tests/anim/.build

@@ -12,6 +12,7 @@
 #include "draw3d.h"
 #include "party.h"
 #include "player.h"
+#include "character_anim.h"
 
 int t1x = 0;
 int t1z = 0;
@@ -247,9 +248,8 @@ void Draw3DScene(void)
     // Set camera for drawing
     NE_CameraUse(Camera);
 
-    // Animate all Obj
-    if(PlayerAnim && roundState != WAIT_START)
-        NE_ModelAnimateAll();
+    // Pose every character for this frame, visible or not, so each stays in step.
+    CharacterAnim_UpdatePlayers();
 
     // Reset polygons Alpha/Light/Effect
     NE_PolyFormat(31, 0, NE_LIGHT_0, NE_CULL_BACK, NE_MODULATION);
@@ -405,8 +405,11 @@ void DrawPlayers()
     for (int playerIndex = 1; playerIndex < MaxPlayer; playerIndex++)
     {
         Player *player = &AllPlayers[playerIndex];
-        // Check if he is not dead, in game and if the camera is not on this player
-        if (AllPlayers[playerIndex].Id != UNUSED && !AllPlayers[playerIndex].IsDead && CurrentCameraPlayer != playerIndex)
+        // Check if he is in game and if the camera is not on this player. The dead stay
+        // where they fell, as bodies, until they respawn; that needs the animated rig.
+        bool drawnDead = AllPlayers[playerIndex].IsDead && CharacterAnim_Ready();
+        if (AllPlayers[playerIndex].Id != UNUSED && (!AllPlayers[playerIndex].IsDead || drawnDead) &&
+            AllPlayers[playerIndex].PlayerModel != NULL && CurrentCameraPlayer != playerIndex)
         {
             for (int i3 = 0; i3 < allMaps[currentMap].AllZones[AllPlayers[playerIndex].CurrentOcclusionZone].ZoneCount; i3++)
             {
@@ -420,10 +423,10 @@ void DrawPlayers()
                     {
                         NE_PolyFormat(31, 0, NE_LIGHT_0, NE_CULL_BACK, NE_MODULATION);
                         // Draw player's skin
-                        NE_ModelDraw(AllPlayers[playerIndex].PlayerModel);
+                        CharacterAnim_DrawPlayer(playerIndex);
 
                         // Draw player's shadow
-                        if (player->isAi || fabs(player->position.y - player->lerpDestination.y) < 0.05)
+                        if (!drawnDead && (player->isAi || fabs(player->position.y - player->lerpDestination.y) < 0.05))
                         {
                             NE_PolyFormat(15, 0, NE_LIGHT_0, NE_CULL_BACK, NE_MODULATION);
                             NE_ModelDraw(AllPlayers[playerIndex].PlayerShadow);

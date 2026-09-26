@@ -29,6 +29,7 @@
 #include "stats.h"
 #include "camera.h"
 #include "dsidev.h"
+#include "character_anim.h"
 
 //
 //////Level
@@ -325,6 +326,7 @@ int main(int argc, char **argv)
 	setCameraMapPosition();
 
 	initGraphics();
+	CharacterAnim_Init();
 
 	// Load the default map
 	LoadMap(currentMap);

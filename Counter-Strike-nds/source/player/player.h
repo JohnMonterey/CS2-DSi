@@ -9,7 +9,6 @@
 
 #include "main.h"
 
-extern bool PlayerAnim;
 
 void killPlayer(Player *player);
 void makeHit(int hitBy, int playerHit, float distance, int shootIndex);

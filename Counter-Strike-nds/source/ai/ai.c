@@ -586,11 +586,6 @@ void checkAiShoot()
             Direction.y = targetPlayer->PlayerModel->y - (player->PlayerModel->y + PlayerEyeOffsetF32(player));
             Direction.z = targetPlayer->PlayerModel->z - player->PlayerModel->z;
             player->AngleDestination = atan2f(Direction.x, Direction.z) * 512.0 / (M_TWOPI) + 256.0;
-            if(PlayerAnim)
-            {
-                NE_ModelAnimSetSpeed(player->PlayerModel, 0);
-                NE_ModelAnimSetFrame(player->PlayerModel, 0);
-            }
 
             if (player->AllGunsInInventory[player->currentGunInInventory] < GunCount && !player->isReloading && player->GunWaitCount >= getPlayerCurrentGun(player).fireRate)
             {
@@ -635,13 +630,6 @@ void checkAiShoot()
                         startReloadGun(i);
                     }
                 }
-            }
-        }
-        else if (player->target == NO_PLAYER && player->isAi && !player->IsDead)
-        {
-            if(PlayerAnim)
-            {
-                NE_ModelAnimSetSpeed(player->PlayerModel, 5);
             }
         }
     }

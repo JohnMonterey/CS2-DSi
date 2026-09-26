@@ -6,6 +6,7 @@
 
 # Host test binaries for the movement core
 /Counter-Strike-nds/tests/movement/.build/
+/Counter-Strike-nds/tests/anim/.build/
 
 # UI test output. The reference images in tests/ui/refs/ ARE committed.
 /tests/ui/.out/

@@ -360,11 +360,24 @@ void SetOnlinelPlayersPositions()
             Direction.x = GetWaypoints()[player->Path[CurPath]].x - player->position.x;
             Direction.y = GetWaypoints()[player->Path[CurPath]].y - 0.1 - player->position.y;
             Direction.z = GetWaypoints()[player->Path[CurPath]].z - player->position.z;
+            // Face along the path's segment. The first segment has no waypoint behind it
+            // (Path[-1] would read the neighbouring field), so it starts from the bot itself.
             Vector2 Direction2D;
-            Direction2D.x = GetWaypoints()[player->Path[CurPath]].x - GetWaypoints()[player->Path[CurPath - 1]].x;
-            Direction2D.y = GetWaypoints()[player->Path[CurPath]].z - GetWaypoints()[player->Path[CurPath - 1]].z;
+            if (CurPath > 0)
+            {
+                Direction2D.x = GetWaypoints()[player->Path[CurPath]].x - GetWaypoints()[player->Path[CurPath - 1]].x;
+                Direction2D.y = GetWaypoints()[player->Path[CurPath]].z - GetWaypoints()[player->Path[CurPath - 1]].z;
+            }
+            else
+            {
+                Direction2D.x = Direction.x;
+                Direction2D.y = Direction.z;
+            }
+            // A zero-length segment has no direction; normalising it would give NaN.
+            bool hasHeading = Direction2D.x != 0 || Direction2D.y != 0;
             normalize(&Direction);
-            normalize2D(&Direction2D);
+            if (hasHeading)
+                normalize2D(&Direction2D);
 
             // Smoothing player position
             if (player->position.x - 0.1 > GetWaypoints()[player->Path[CurPath]].x || player->position.x + 0.1 < GetWaypoints()[player->Path[CurPath]].x)
@@ -417,9 +430,12 @@ void SetOnlinelPlayersPositions()
                 NE_ModelSetCoord(player->PlayerModel, player->position.x, player->position.y, player->position.z);
                 NE_ModelSetCoord(player->PlayerShadow, player->position.x, player->position.y - 0.845, player->position.z);
 
-                float FinalAngle = atan2f(Direction2D.x, Direction2D.y) * 512.0 / (M_TWOPI) + 256.0;
-                player->Angle = FinalAngle;
-                player->PlayerModel->ry = player->Angle;
+                if (hasHeading)
+                {
+                    float FinalAngle = atan2f(Direction2D.x, Direction2D.y) * 512.0 / (M_TWOPI) + 256.0;
+                    player->Angle = FinalAngle;
+                    player->PlayerModel->ry = player->Angle;
+                }
             }
         }
         else //?

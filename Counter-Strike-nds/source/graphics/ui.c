@@ -2452,15 +2452,8 @@ void initAISettingsMenu()
     AllCheckBoxs[0].ySize = 20;
     AllCheckBoxs[0].value = &equalTeam;
 
-    // Set show Anim checkbox
-    AllCheckBoxs[1].xPos = 165;
-    AllCheckBoxs[1].yPos = 58;
-    AllCheckBoxs[1].xSize = 20;
-    AllCheckBoxs[1].ySize = 20;
-    AllCheckBoxs[1].value = &PlayerAnim;
-
     SetButtonToShow(3);
-    SetCheckBoxToShow(2);
+    SetCheckBoxToShow(1);
 }
 
 void setBotAmount4()
@@ -3418,7 +3411,6 @@ void drawAISettingsMenu()
                  "Mod settings");
 
     printLongText(4, 12, 4, "Equal teams:");
-    printLongText(12, 31, 4, "(Causes crashes) -Animated model:");
     printLongText(19, 33, 20, "(May cause crashes)");
 
     char aiAmountText[26];
